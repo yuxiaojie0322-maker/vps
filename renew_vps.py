@@ -150,26 +150,53 @@ def renew_vps():
             # 打开登录页
             log("打开登录页...")
             page.goto(f"{MANAGER_URL}/login", wait_until="networkidle", timeout=30000)
-            time.sleep(2)
+            time.sleep(3)
 
             page.fill("input[name='username']", EMAIL)
             page.fill("input[name='password']", PASSWORD)
             log("已填写邮箱和密码")
 
-            # 抓取页面上的 g-recaptcha sitekey 并调用 CapSolver API
+            # 兼容更多渲染模式的多重提取 SiteKey 逻辑
             site_key = page.evaluate("""() => {
-                const el = document.querySelector('.g-recaptcha');
-                return el ? el.getAttribute('data-sitekey') : null;
+                // 1. 尝试常规选择器
+                const selectors = ['.g-recaptcha', '[data-sitekey]', '#g-recaptcha'];
+                for (const selector of selectors) {
+                    const el = document.querySelector(selector);
+                    if (el && el.getAttribute('data-sitekey')) {
+                        return el.getAttribute('data-sitekey');
+                    }
+                }
+                // 2. 尝试从验证码 iframe 链接中抓取 k= 参数
+                const iframes = Array.from(document.querySelectorAll('iframe'));
+                for (const iframe of iframes) {
+                    const src = iframe.getAttribute('src') || '';
+                    if (src.includes('recaptcha')) {
+                        const match = src.match(/k=([^&]+)/);
+                        if (match) return match[1];
+                    }
+                }
+                // 3. 页面 HTML 正则兜底搜索
+                const html = document.body.innerHTML;
+                const match = html.match(/data-sitekey=["']([^"']+)["']/);
+                return match ? match[1] : null;
             }""")
 
             if site_key:
-                log(f"检测到 reCAPTCHA，SiteKey: {site_key}")
+                log(f"检测到 reCAPTCHA，成功提取 SiteKey: {site_key}")
                 token = solve_recaptcha_v2(page.url, site_key)
                 if token:
-                    # 将验证成功获得的 Token 直接填入隐藏字段
+                    # 注入破解好的 token
                     page.evaluate(f"""(token) => {{
-                        document.getElementById('g-recaptcha-response').innerHTML = token;
-                        document.getElementById('g-recaptcha-response').value = token;
+                        let el = document.getElementById('g-recaptcha-response');
+                        if (!el) {{
+                            el = document.createElement('textarea');
+                            el.id = 'g-recaptcha-response';
+                            el.name = 'g-recaptcha-response';
+                            el.style.display = 'none';
+                            document.forms[0].appendChild(el);
+                        }}
+                        el.innerHTML = token;
+                        el.value = token;
                     }}""", token)
                     log("已注入 reCAPTCHA Token 响应 ✅")
                 else:
