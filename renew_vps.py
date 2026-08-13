@@ -1,8 +1,8 @@
 """
 VPSFree.es 自动续期脚本 (Xvfb + NopeCHA 增强版)
-- 支持标准 HTTP/SOCKS5 代理配置
-- 自动过滤非法代理链接，避免网络崩溃
-- 使用 NopeCHA 插件破解验证码并提交续期
+- 支持自动清洗 SOCKS5/HTTP 代理中的 # 备注后缀，防止连接崩溃
+- 使用 NopeCHA 扩展自动破解 reCAPTCHA 验证码
+- 自动确认续期并发送 TG 截图与失败报警通知
 """
 
 import os
@@ -81,7 +81,7 @@ def send_tg_photo(photo_path, caption=""):
 # ====================================================================
 def patch_nopecha(nopecha_path, api_key):
     if not api_key:
-        log("未设置 NOPECHA_KEY，使用免费模式", "WARN")
+        log("未设置 NOPECHA_KEY，使用试用模式", "WARN")
         return False
 
     bg = os.path.join(nopecha_path, "assets", "qrmm9f.js")
@@ -89,7 +89,7 @@ def patch_nopecha(nopecha_path, api_key):
         bg = os.path.join(nopecha_path, "background.js")
 
     if not os.path.exists(bg):
-        log(f"未找到 NopeCHA 入口文件: {bg}", "WARN")
+        log(f"未找到 NopeCHA 入口文件: {bg}", "ERROR")
         return False
 
     try:
@@ -148,19 +148,19 @@ def renew_vps():
                 f"--load-extension={EXT_PATH}",
             ])
 
-        # 安全处理代理格式：仅当开头为 http:// 或 socks5:// 时才使用
+        # 安全清洗并处理代理格式（剥离末尾的 # 节点备注）
         proxy_config = None
         if PROXY_URL:
-            if PROXY_URL.startswith(("http://", "https://", "socks5://", "socks4://")):
-                clean_proxy = PROXY_URL.replace("socks5://", "socks5://")
-                log(f"🌐 检测到标准代理格式，将通过代理发起请求: {clean_proxy.split('@')[-1]}")
+            clean_proxy = PROXY_URL.split("#")[0].strip()
+            if clean_proxy.startswith(("http://", "https://", "socks5://", "socks4://")):
+                log(f"🌐 已自动清洗代理链接，正在通过代理建立连接: {clean_proxy.split('@')[-1]}")
                 proxy_config = {"server": clean_proxy}
             else:
-                log("⚠️ PROXY_URL 格式非标准 HTTP/SOCKS5 代理(属于 V2Ray/订阅链接)，已降级切换为直连", "WARN")
+                log("⚠️ PROXY_URL 格式非标准 HTTP/SOCKS5，降级为直连网络", "WARN")
 
         browser = p.chromium.launch_persistent_context(
             user_data_dir="/tmp/playwright-data",
-            headless=False,  # Xvfb 虚拟桌面模式运行
+            headless=False,  # Xvfb 虚拟屏幕模式运行
             proxy=proxy_config,
             args=launch_args,
             viewport={"width": 1280, "height": 800},
@@ -180,7 +180,7 @@ def renew_vps():
             page.fill("input[name='password']", PASSWORD)
             log("已填写账号密码")
 
-            log("等待 NopeCHA 扩展破解验证码（最多 60 秒）...")
+            log("等待 NopeCHA 扩展破解验证码（最多等待 60 秒）...")
             solved = False
             for i in range(60):
                 solved = page.evaluate("""() => {
@@ -195,7 +195,7 @@ def renew_vps():
             if not solved:
                 log("验证码等待超时，尝试强行提交...", "WARN")
 
-            # 强行提交表单
+            # 强行底层提交表单
             log("正在提交登录...")
             time.sleep(2)
             try:
