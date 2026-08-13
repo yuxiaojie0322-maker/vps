@@ -1,6 +1,8 @@
 """
-VPSFree.es 自动续期脚本
-使用 NopeCHA 扩展自动解 reCAPTCHA，续期后推送 TG 通知+截图
+VPSFree.es 自动续期脚本 (代理 + Buster 语音打码版)
+- 支持代理 (PROXY_URL) 绕过机房 IP 高风控
+- 使用 Buster 自动解 reCAPTCHA 验证码
+- 自动确认续期并发送 TG 截图通知
 """
 
 import os
@@ -12,10 +14,10 @@ from datetime import datetime
 # ========== 配置 ==========
 EMAIL = os.environ.get("VPS_EMAIL", "")
 PASSWORD = os.environ.get("VPS_PASSWORD", "")
-NOPECHA_KEY = os.environ.get("NOPECHA_KEY", "").strip()
+PROXY_URL = os.environ.get("PROXY_URL", "").strip()
 MANAGER_URL = "https://manager.vpsfree.es"
-EXT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "scripts", "extensions", "nopecha", "unpacked")
+BUSTER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "scripts", "extensions", "buster", "unpacked")
 
 # Telegram 推送配置
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "").strip()
@@ -74,67 +76,18 @@ def send_tg_photo(photo_path, caption=""):
 
 
 # ====================================================================
-# Patch NopeCHA 扩展 (开启语音/图片全自动打码)
-# ====================================================================
-def patch_nopecha(nopecha_path, api_key):
-    if not api_key:
-        log("未设置 NOPECHA_KEY", "WARN")
-        return False
-
-    bg = os.path.join(nopecha_path, "assets", "qrmm9f.js")
-    if not os.path.exists(bg):
-        bg = os.path.join(nopecha_path, "background.js")
-
-    if not os.path.exists(bg):
-        log(f"未匹配到 NopeCHA 入口文件: {bg}", "ERROR")
-        return False
-
-    try:
-        with open(bg, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        if "// NopeCHA-Inject" in content:
-            log("NopeCHA 插件已注入 Key，跳过")
-            return True
-
-        inject = f"""// NopeCHA-Inject
-(function(){{
-    const s={{enabled:true,key:"{api_key}",auto_solve_hcaptcha:true,auto_solve_recaptcha:true,recaptcha_solve_method:"image"}};
-    function applySettings(){{
-        if (typeof chrome !== 'undefined' && chrome.storage) {{
-            if (chrome.storage.local) chrome.storage.local.set({{settings:s, key:"{api_key}"}});
-            if (chrome.storage.sync) chrome.storage.sync.set({{settings:s, key:"{api_key}"}});
-        }}
-    }}
-    applySettings();
-    setTimeout(applySettings, 1000);
-    setTimeout(applySettings, 3000);
-}})();\n"""
-        with open(bg, "w", encoding="utf-8") as f:
-            f.write(inject + content)
-
-        log("✅ NopeCHA API Key 注入插件成功！")
-        return True
-    except Exception as e:
-        log(f"Patch 失败: {e}", "ERROR")
-        return False
-
-
-# ====================================================================
 # 主流程
 # ====================================================================
 def renew_vps():
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        log("请先安装 Playwright", "ERROR")
+        log("请先安装 Playwright: pip install playwright", "ERROR")
         return False
 
-    ext_ok = os.path.exists(EXT_PATH) and os.path.exists(os.path.join(EXT_PATH, "manifest.json"))
-    if ext_ok and NOPECHA_KEY:
-        patch_nopecha(EXT_PATH, NOPECHA_KEY)
-    else:
-        log("未成功加载 NopeCHA 插件或缺少 Key", "WARN")
+    ext_ok = os.path.exists(BUSTER_PATH) and os.path.exists(os.path.join(BUSTER_PATH, "manifest.json"))
+    if not ext_ok:
+        log(f"未找到 Buster 扩展目录: {BUSTER_PATH}", "WARN")
 
     with sync_playwright() as p:
         launch_args = [
@@ -143,13 +96,22 @@ def renew_vps():
         ]
         if ext_ok:
             launch_args.extend([
-                f"--disable-extensions-except={EXT_PATH}",
-                f"--load-extension={EXT_PATH}",
+                f"--disable-extensions-except={BUSTER_PATH}",
+                f"--load-extension={BUSTER_PATH}",
             ])
+
+        # 配置代理节点（如果设置了 PROXY_URL）
+        proxy_config = None
+        if PROXY_URL:
+            # 兼容处理 SOCKS5 scheme 转换
+            clean_proxy = PROXY_URL.replace("socks5://", "socks5://")
+            log(f"🌐 已检测到代理配置，将使用代理链接: {clean_proxy.split('@')[-1]}")
+            proxy_config = {"server": clean_proxy}
 
         browser = p.chromium.launch_persistent_context(
             user_data_dir="/tmp/playwright-data",
-            headless=False,
+            headless=False,  # Xvfb 虚拟屏幕模式运行
+            proxy=proxy_config,
             args=launch_args,
             viewport={"width": 1280, "height": 800},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -168,23 +130,45 @@ def renew_vps():
             page.fill("input[name='password']", PASSWORD)
             log("已填写账号密码")
 
-            log("等待 NopeCHA 自动破解九宫格验证码（给足 120 秒）...")
+            # 触发验证码复选框
+            log("点击人机验证复选框...")
+            try:
+                recaptcha_frame = page.frame_locator('iframe[title*="reCAPTCHA"]')
+                recaptcha_frame.locator('.recaptcha-checkbox-border').click()
+                time.sleep(2)
+            except Exception as e:
+                log(f"勾选验证码框时提示: {e}", "WARN")
+
+            # 等待破解 Token 填充
+            log("等待自动破解验证码（最多等待 60 秒）...")
             solved = False
-            for i in range(120):
-                # 检查隐藏框是否已经拿到 token
+            for i in range(60):
+                # 校验 g-recaptcha-response 是否已填入 token
                 solved = page.evaluate("""() => {
                     const ta = document.getElementById('g-recaptcha-response');
                     return ta && ta.value && ta.value.length > 0;
                 }""")
                 if solved:
-                    log(f"🎉 验证码已完全解开 ✅（耗时 {i+1} 秒）")
+                    log(f"🎉 验证码已被成功破解 ✅（耗时 {i+1} 秒）")
                     break
+
+                # 尝试点击 Buster 插件按钮触发语音破解
+                if ext_ok:
+                    try:
+                        challenge_frame = page.frame_locator('iframe[src*="bframe"]')
+                        buster_btn = challenge_frame.locator('.buster-button')
+                        if buster_btn.is_visible():
+                            buster_btn.click()
+                            log("已触发 Buster 自动打码按钮 ⚡")
+                    except:
+                        pass
+
                 time.sleep(1)
 
             if not solved:
-                log("NopeCHA 120秒解题超时，尝试强行提交...", "WARN")
+                log("验证码破解超时，尝试直接强行提交...", "WARN")
 
-            # 无论如何尝试提交
+            # 强行底层提交表单
             log("正在提交登录表单...")
             time.sleep(2)
             try:
@@ -197,7 +181,7 @@ def renew_vps():
                     }
                 }""")
             except Exception as e:
-                log(f"JS 提交失败，使用强行点击: {e}", "WARN")
+                log(f"JS 提交失败，使用强制点击: {e}", "WARN")
                 page.click("button[type='submit']", force=True)
 
             time.sleep(6)
@@ -282,7 +266,7 @@ def main():
     log("=" * 40)
 
     if not EMAIL or not PASSWORD:
-        log("缺少 VPS_EMAIL 或 VPS_PASSWORD 环境变量！", "ERROR")
+        log("缺少必要的 VPS_EMAIL 或 VPS_PASSWORD 环境变量！", "ERROR")
         sys.exit(1)
 
     log(f"正在处理账号: {EMAIL}")
