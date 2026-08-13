@@ -18,28 +18,19 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: 安装系统工具
+      - name: 安装系统依赖与下载 NopeCHA 插件
         run: |
           sudo apt-get update
           sudo apt-get install -y p7zip-full wget xvfb curl
-
-      - name: 下载并解压 Buster 语音打码插件
-        run: |
-          mkdir -p scripts/extensions/buster/unpacked
+          mkdir -p scripts/extensions/nopecha
           
-          # 使用跟进重定向 (-L) 确保下载真正的 zip 文件而非 404 网页
-          wget -q -L -O /tmp/buster.zip \
-            "https://github.com/eoiner/buster/releases/download/v2.0.1/buster-2.0.1-chrome.zip" || true
-
-          if [ -f /tmp/buster.zip ] && [ $(stat -c%s "/tmp/buster.zip") -gt 100000 ]; then
-            7z x -y /tmp/buster.zip -oscripts/extensions/buster/unpacked
-            echo "✅ Buster 插件解压成功"
-          else
-            echo "⚠️ 官方 Release 获取失败，尝试使用预备备份源..."
-            # 备用直连下载路径
-            wget -q -L -O /tmp/buster.zip \
-              "https://raw.githubusercontent.com/eoiner/buster/master/manifest.json" || true
-            echo "已跳过压缩包解压，由脚本处理回退逻辑"
+          # 下载并解压 NopeCHA 插件
+          wget -q -L -O /tmp/nopecha.zip \
+            https://github.com/NopeCHALLC/nopecha-extension/releases/download/0.6.1/chromium.zip || true
+          
+          if [ -f /tmp/nopecha.zip ]; then
+            7z x -y /tmp/nopecha.zip -oscripts/extensions/nopecha/unpacked
+            echo "✅ NopeCHA 插件下载完成"
           fi
 
       - name: 安装 Python 依赖与 Playwright 环境
@@ -52,6 +43,7 @@ jobs:
         env:
           VPS_EMAIL: ${{ secrets.VPS_EMAIL }}
           VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
+          NOPECHA_KEY: ${{ secrets.NOPECHA_KEY }}
           PROXY_URL: ${{ secrets.PROXY_URL }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
