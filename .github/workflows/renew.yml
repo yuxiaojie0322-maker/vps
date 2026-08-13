@@ -2,7 +2,7 @@ name: VPSFree 自动续期
 
 on:
   schedule:
-    - cron: "0 2 */7 * *"   # 每7天凌晨2点执行
+    - cron: "0 2 */7 * *"   # 每 7 天凌晨 2 点自动执行
   workflow_dispatch:        # 支持手动触发执行
 
 jobs:
@@ -18,15 +18,15 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: 安装系统依赖与下载 NopeCHA 插件
+      - name: 安装系统依赖与下载 Buster 语音打码扩展
         run: |
           sudo apt-get update
           sudo apt-get install -y p7zip-full wget xvfb
-          mkdir -p scripts/extensions/nopecha
-          wget -q -O /tmp/nopecha.zip \
-            https://github.com/NopeCHALLC/nopecha-extension/releases/download/0.6.1/chromium.zip
-          7z x -y /tmp/nopecha.zip -oscripts/extensions/nopecha/unpacked
-          echo "NopeCHA 扩展已下载"
+          mkdir -p scripts/extensions/buster
+          wget -q -O /tmp/buster.zip \
+            https://github.com/eoiner/buster/releases/download/v2.0.1/buster-2.0.1-chrome.zip
+          7z x -y /tmp/buster.zip -oscripts/extensions/buster/unpacked
+          echo "Buster 扩展解压成功"
 
       - name: 安装 Python 依赖与 Playwright 环境
         run: |
@@ -34,11 +34,11 @@ jobs:
           sudo $(which playwright) install-deps chromium
           playwright install chromium
 
-      - name: 执行续期 (Virtual Screen 模式)
+      - name: 执行续期 (Virtual Screen + Proxy 模式)
         env:
           VPS_EMAIL: ${{ secrets.VPS_EMAIL }}
           VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
-          NOPECHA_KEY: ${{ secrets.NOPECHA_KEY }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: |
