@@ -1,7 +1,6 @@
 """
 VPSFree.es 自动续期脚本
-使用 NopeCHA 扩展自动解 reCAPTCHA，支持 API Key 和试用模式
-适用于 GitHub Actions 或本地运行
+使用 NopeCHA 扩展自动解 reCAPTCHA，续期后推送 TG 通知+截图
 """
 
 import os
@@ -21,6 +20,10 @@ COOKIE_FILE = "vpsfree_cookies.pkl"
 EXT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "scripts", "extensions", "nopecha", "unpacked")
 
+# Telegram 推送配置
+TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
+TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "")
+
 
 # ========== 日志 ==========
 def log(msg, level="INFO"):
@@ -29,19 +32,58 @@ def log(msg, level="INFO"):
 
 
 # ====================================================================
+# Telegram 推送
+# ====================================================================
+def send_tg_text(text):
+    """推送纯文本消息到 TG"""
+    if not TG_BOT_TOKEN or not TG_CHAT_ID:
+        log("未配置 TG 推送，跳过", "WARN")
+        return False
+    try:
+        url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+        requests.post(url, json={
+            "chat_id": TG_CHAT_ID,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }, timeout=15)
+        log("TG 文本消息已发送 ✅")
+        return True
+    except Exception as e:
+        log(f"TG 发送失败: {e}", "WARN")
+        return False
+
+
+def send_tg_photo(photo_path, caption=""):
+    """推送图片消息（带说明文字）到 TG"""
+    if not TG_BOT_TOKEN or not TG_CHAT_ID:
+        log("未配置 TG 推送，跳过", "WARN")
+        return False
+    if not os.path.exists(photo_path):
+        log(f"截图不存在: {photo_path}", "WARN")
+        return send_tg_text(caption)
+    try:
+        url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendPhoto"
+        with open(photo_path, "rb") as f:
+            files = {"photo": f}
+            data = {"chat_id": TG_CHAT_ID, "caption": caption, "parse_mode": "HTML"}
+            requests.post(url, files=files, data=data, timeout=30)
+        log("TG 图片消息已发送 ✅")
+        return True
+    except Exception as e:
+        log(f"TG 图片发送失败: {e}", "WARN")
+        # 图片发送失败时退回到纯文本
+        return send_tg_text(caption)
+
+
+# ====================================================================
 # NopeCHA 额度检查
 # ====================================================================
 def check_nopecha_availability():
-    """
-    检查 NopeCHA API Key 是否有额度，无 Key 则尝试试用模式
-    返回: (api_key, error_msg)
-    """
     raw_key = os.environ.get("NOPECHA_KEY", "").strip()
     keys = [k.strip() for k in raw_key.splitlines() if k.strip()] if raw_key else []
-
     session = requests.Session()
 
-    # 逐个检查 Key
     for idx, key in enumerate(keys, start=1):
         try:
             resp = session.get(f"https://api.nopecha.com/v1/status?key={key}", timeout=15)
@@ -54,7 +96,6 @@ def check_nopecha_availability():
         except Exception as e:
             log(f"Key #{idx} 状态查询失败: {e}", "WARN")
 
-    # 无有效 Key，尝试试用
     if keys:
         log("所有 Key 均无可用额度，回退到试用模式")
 
@@ -76,13 +117,9 @@ def check_nopecha_availability():
 
 
 # ====================================================================
-# NopeCHA 扩展 Patch — 注入 API Key
+# NopeCHA 扩展 Patch
 # ====================================================================
 def patch_nopecha(nopecha_path, api_key):
-    """
-    将 API Key 注入 NopeCHA 扩展的 background.js，
-    使其启动时自动配置好，无需手动操作
-    """
     if not api_key:
         log("使用试用模式，无需 Patch")
         return False
@@ -97,11 +134,9 @@ def patch_nopecha(nopecha_path, api_key):
     try:
         with open(bg, encoding="utf-8") as f:
             content = f.read()
-
         if "NopeCHA-Inject" in content:
             log("NopeCHA 已注入过，跳过")
             return True
-
         inject = f"""// NopeCHA-Inject
 (function(){{
     const s={{enabled:true,key:"{api_key}",auto_solve_hcaptcha:true,auto_solve_recaptcha:true}};
@@ -111,10 +146,8 @@ def patch_nopecha(nopecha_path, api_key):
     }}
     w();setTimeout(w,1000);setTimeout(w,3000);
 }})();\n"""
-
         with open(bg, "w", encoding="utf-8") as f:
             f.write(inject + content)
-
         log("✅ NopeCHA Key 注入成功")
         return True
     except Exception as e:
@@ -132,12 +165,10 @@ def renew_vps():
         log("请先安装 Playwright: pip install playwright && playwright install chromium", "ERROR")
         return False
 
-    # 检查扩展是否存在
     ext_ok = os.path.exists(EXT_PATH) and os.path.exists(
         os.path.join(EXT_PATH, "manifest.json")
     )
 
-    # 检查 NopeCHA 额度
     nopecha_key = None
     if ext_ok:
         nopecha_key, err = check_nopecha_availability()
@@ -173,7 +204,7 @@ def renew_vps():
         page = browser.pages[0] if browser.pages else browser.new_page()
 
         try:
-            # ====== Cookie 恢复（仅本地） ======
+            # Cookie 恢复（仅本地）
             if os.path.exists(COOKIE_FILE) and not is_ci:
                 log("找到保存的登录状态，尝试直接续期...")
                 with open(COOKIE_FILE, "rb") as f:
@@ -190,7 +221,7 @@ def renew_vps():
 
                 log("Cookie 已过期，需要重新登录")
 
-            # ====== 登录 ======
+            # 登录
             log("打开登录页...")
             page.goto(f"{MANAGER_URL}/login", wait_until="networkidle", timeout=30000)
             time.sleep(2)
@@ -199,7 +230,6 @@ def renew_vps():
             page.fill("input[name='password']", PASSWORD)
             log("已填写邮箱和密码")
 
-            # 等待 NopeCHA 自动解验证码
             if ext_ok:
                 log("等待 NopeCHA 自动解验证码...")
                 for i in range(30):
@@ -214,7 +244,6 @@ def renew_vps():
                 else:
                     log("NopeCHA 未能在30秒内解除验证码", "WARN")
 
-            # 点击登录
             page.click("button[type='submit']")
             time.sleep(3)
 
@@ -224,7 +253,6 @@ def renew_vps():
                 return False
             log("登录成功 ✅")
 
-            # 保存 Cookie（本地）
             if not is_ci:
                 cookies = browser.cookies()
                 with open(COOKIE_FILE, "wb") as f:
@@ -307,6 +335,9 @@ def do_renew(page, browser):
     return True
 
 
+# ====================================================================
+# 主函数
+# ====================================================================
 def main():
     log("=" * 40)
     log("VPSFree 自动续期脚本")
@@ -317,13 +348,43 @@ def main():
         sys.exit(1)
 
     log(f"账号: {EMAIL}")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     success = renew_vps()
+
     if success:
         log("✅ 续期成功！")
+        # TG 推送：成功截图
+        caption = (
+            f"✅ <b>VPSFree 续期成功</b>\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"📧 账号: {EMAIL}\n"
+            f"⏰ 时间: {now}\n"
+            f"🔁 下次续期: 7天后\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"🖼 下方为续期后页面截图"
+        )
+        send_tg_photo("renew_success.png", caption)
         sys.exit(0)
     else:
-        log("❌ 续期失败，请手动处理", "ERROR")
+        log("❌ 续期失败", "ERROR")
+        # TG 推送：失败截图
+        caption = (
+            f"❌ <b>VPSFree 续期失败</b>\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"📧 账号: {EMAIL}\n"
+            f"⏰ 时间: {now}\n"
+            f"💡 请手动登录 https://manager.vpsfree.es 续期\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"🖼 下方为失败时页面截图"
+        )
+        # 尝试发送最相关的截图
+        for shot in ["renew_error.png", "no_renew_btn.png", "no_manage_btn.png", "login_failed.png"]:
+            if os.path.exists(shot):
+                send_tg_photo(shot, caption)
+                break
+        else:
+            send_tg_text(caption)
         sys.exit(1)
 
 
