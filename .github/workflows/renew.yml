@@ -2,7 +2,7 @@ name: VPSFree 自动续期
 
 on:
   schedule:
-    - cron: "0 2 */7 * *"   # 每 7 天凌晨 2 点自动执行
+    - cron: "0 2 */7 * *"   # 每7天凌晨2点执行
   workflow_dispatch:        # 支持手动触发执行
 
 jobs:
@@ -18,15 +18,27 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: 安装系统依赖与下载 Buster 语音打码扩展
+      - name: 安装系统依赖与下载 Buster 语音打码插件
         run: |
           sudo apt-get update
-          sudo apt-get install -y p7zip-full wget xvfb
+          sudo apt-get install -y p7zip-full wget xvfb curl
           mkdir -p scripts/extensions/buster
-          wget -q -O /tmp/buster.zip \
-            https://github.com/eoiner/buster/releases/download/v2.0.1/buster-2.0.1-chrome.zip
-          7z x -y /tmp/buster.zip -oscripts/extensions/buster/unpacked
-          echo "Buster 扩展解压成功"
+          
+          # 自动获取 Buster 最新版 zip 链接，避免硬编码 404
+          BUSTER_URL=$(curl -s https://api.github.com/repos/eoiner/buster/releases/latest | grep "browser_download_url.*zip" | cut -d : -f 2,3 | tr -d \")
+          if [ -z "$BUSTER_URL" ]; then
+            BUSTER_URL="https://github.com/eoiner/buster/releases/download/v2.0.1/buster-2.0.1-chrome.zip"
+          fi
+          
+          echo "下载地址: $BUSTER_URL"
+          wget -q -O /tmp/buster.zip "$BUSTER_URL" || true
+          
+          if [ -f /tmp/buster.zip ]; then
+            7z x -y /tmp/buster.zip -oscripts/extensions/buster/unpacked
+            echo "Buster 插件下载并解压完成"
+          else
+            echo "Buster 下载失败，跳过插件加载"
+          fi
 
       - name: 安装 Python 依赖与 Playwright 环境
         run: |
@@ -34,7 +46,7 @@ jobs:
           sudo $(which playwright) install-deps chromium
           playwright install chromium
 
-      - name: 执行续期 (Virtual Screen + Proxy 模式)
+      - name: 执行续期 (Virtual Screen 模式)
         env:
           VPS_EMAIL: ${{ secrets.VPS_EMAIL }}
           VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
