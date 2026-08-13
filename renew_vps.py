@@ -1,6 +1,6 @@
 """
 VPSFree.es 自动续期脚本
-使用 CapSolver API 自动通过 reCAPTCHA，续期后推送 TG 通知+截图
+使用 NopeCHA API 自动通过 reCAPTCHA，续期后推送 TG 通知+截图
 """
 
 import os
@@ -15,7 +15,7 @@ from pathlib import Path
 # ========== 配置 ==========
 EMAIL = os.environ.get("VPS_EMAIL", "")
 PASSWORD = os.environ.get("VPS_PASSWORD", "")
-CAPSOLVER_KEY = os.environ.get("CAPSOLVER_KEY", "").strip()
+NOPECHA_KEY = os.environ.get("NOPECHA_KEY", "").strip()
 MANAGER_URL = "https://manager.vpsfree.es"
 COOKIE_FILE = "vpsfree_cookies.pkl"
 
@@ -73,50 +73,47 @@ def send_tg_photo(photo_path, caption=""):
 
 
 # ====================================================================
-# CapSolver API 直接破解 reCAPTCHA v2
+# NopeCHA API 解码 reCAPTCHA v2
 # ====================================================================
-def solve_recaptcha_v2(website_url, site_key):
-    if not CAPSOLVER_KEY:
-        log("未配置 CAPSOLVER_KEY，无法调用 API 解码", "ERROR")
+def solve_recaptcha_nopecha(website_url, site_key):
+    if not NOPECHA_KEY:
+        log("未配置 NOPECHA_KEY，无法调用 API 解码", "ERROR")
         return None
 
-    log("正在通过 CapSolver API 提交人机验证任务...")
-    task_url = "https://api.capsolver.com/createTask"
+    log("正在通过 NopeCHA API 提交人机验证任务...")
+    post_url = "https://api.nopecha.com/"
     payload = {
-        "clientKey": CAPSOLVER_KEY,
-        "task": {
-            "type": "ReCaptchaV2TaskProxyLess",
-            "websiteURL": website_url,
-            "websiteKey": site_key
-        }
+        "key": NOPECHA_KEY,
+        "type": "recaptcha2",
+        "url": website_url,
+        "sitekey": site_key
     }
 
     try:
-        res = requests.post(task_url, json=payload, timeout=20).json()
-        if res.get("errorId") != 0:
-            log(f"CapSolver 创建任务失败: {res.get('errorDescription')}", "ERROR")
+        res = requests.post(post_url, json=payload, timeout=20).json()
+        if "error" in res:
+            log(f"NopeCHA 创建任务失败: {res.get('message') or res.get('error')}", "ERROR")
             return None
 
-        task_id = res.get("taskId")
-        log(f"CapSolver 任务已创建，ID: {task_id}，等待解码...")
+        task_id = res.get("data")
+        log(f"NopeCHA 任务已提交，ID: {task_id}，等待解码...")
 
-        result_url = "https://api.capsolver.com/getTaskResult"
-        for _ in range(30):
+        # 轮询获取结果
+        get_url = f"https://api.nopecha.com/?key={NOPECHA_KEY}&id={task_id}"
+        for i in range(30):
             time.sleep(3)
-            result = requests.post(result_url, json={"clientKey": CAPSOLVER_KEY, "taskId": task_id}, timeout=15).json()
-            status = result.get("status")
-            if status == "ready":
-                token = result.get("solution", {}).get("gRecaptchaResponse")
-                log("✅ CapSolver 人机验证解码成功！")
-                return token
-            elif status == "failed":
-                log("CapSolver 人机验证解码失败", "ERROR")
+            result = requests.get(get_url, timeout=15).json()
+            if "data" in result and isinstance(result["data"], str):
+                log("✅ NopeCHA 人机验证解码成功！")
+                return result["data"]
+            elif "error" in result and result.get("error") != "incomplete":
+                log(f"NopeCHA 解码失败: {result.get('error')}", "ERROR")
                 return None
 
-        log("CapSolver 人机验证超时", "ERROR")
+        log("NopeCHA 人机验证超时", "ERROR")
         return None
     except Exception as e:
-        log(f"请求 CapSolver API 出错: {e}", "ERROR")
+        log(f"请求 NopeCHA API 出错: {e}", "ERROR")
         return None
 
 
@@ -156,9 +153,8 @@ def renew_vps():
             page.fill("input[name='password']", PASSWORD)
             log("已填写邮箱和密码")
 
-            # 兼容更多渲染模式的多重提取 SiteKey 逻辑
+            # 多重定位抓取 SiteKey
             site_key = page.evaluate("""() => {
-                // 1. 尝试常规选择器
                 const selectors = ['.g-recaptcha', '[data-sitekey]', '#g-recaptcha'];
                 for (const selector of selectors) {
                     const el = document.querySelector(selector);
@@ -166,7 +162,6 @@ def renew_vps():
                         return el.getAttribute('data-sitekey');
                     }
                 }
-                // 2. 尝试从验证码 iframe 链接中抓取 k= 参数
                 const iframes = Array.from(document.querySelectorAll('iframe'));
                 for (const iframe of iframes) {
                     const src = iframe.getAttribute('src') || '';
@@ -175,7 +170,6 @@ def renew_vps():
                         if (match) return match[1];
                     }
                 }
-                // 3. 页面 HTML 正则兜底搜索
                 const html = document.body.innerHTML;
                 const match = html.match(/data-sitekey=["']([^"']+)["']/);
                 return match ? match[1] : null;
@@ -183,9 +177,8 @@ def renew_vps():
 
             if site_key:
                 log(f"检测到 reCAPTCHA，成功提取 SiteKey: {site_key}")
-                token = solve_recaptcha_v2(page.url, site_key)
+                token = solve_recaptcha_nopecha(page.url, site_key)
                 if token:
-                    # 注入破解好的 token
                     page.evaluate(f"""(token) => {{
                         let el = document.getElementById('g-recaptcha-response');
                         if (!el) {{
@@ -292,7 +285,7 @@ def do_renew(page, browser):
 # ====================================================================
 def main():
     log("=" * 40)
-    log("VPSFree 自动续期脚本 (API 解码版)")
+    log("VPSFree 自动续期脚本 (NopeCHA API 版)")
     log("=" * 40)
 
     if not EMAIL or not PASSWORD:
