@@ -147,7 +147,6 @@ def renew_vps():
                 f"--load-extension={EXT_PATH}",
             ])
 
-        # 在 xvfb 虚拟屏幕下使用 headless=False，可以完全避开无头插件冻结机制！
         browser = p.chromium.launch_persistent_context(
             user_data_dir="/tmp/playwright-data",
             headless=False,
@@ -182,9 +181,23 @@ def renew_vps():
                 time.sleep(1)
 
             if not solved:
-                log("NopeCHA 解码超时，尝试直接点击提交...", "WARN")
+                log("NopeCHA 解码超时，尝试强行提交...", "WARN")
 
-            page.click("button[type='submit']")
+            # 强行触发表单提交，避免被验证码弹窗遮罩拦截
+            log("正在提交登录表单...")
+            try:
+                page.evaluate("""() => {
+                    const btn = document.querySelector("button[type='submit']") || document.getElementById('login');
+                    if (btn && btn.form) {
+                        btn.form.submit();
+                    } else if (document.forms.length > 0) {
+                        document.forms[0].submit();
+                    }
+                }""")
+            except Exception as e:
+                log(f"JS 提交失败，使用强行点击: {e}", "WARN")
+                page.click("button[type='submit']", force=True)
+
             time.sleep(5)
 
             if "login" in page.url.lower():
