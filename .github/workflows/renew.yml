@@ -44,6 +44,8 @@ jobs:
           VPS_EMAIL: ${{ secrets.VPS_EMAIL }}
           VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
           NOPECHA_KEY: ${{ secrets.NOPECHA_KEY }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: |
           python renew_vps.py
 
@@ -57,15 +59,3 @@ jobs:
             login_*.png
             no_*.png
           retention-days: 7
-
-      - name: 通知失败
-        if: failure()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: '⚠️ VPSFree 续期失败',
-              body: '自动续期脚本运行失败，请手动登录 https://manager.vpsfree.es 续期！'
-            })
