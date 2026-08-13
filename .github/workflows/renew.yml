@@ -18,13 +18,13 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: 安装系统依赖与下载 NopeCHA 插件
+      - name: 安装系统工具与下载 NopeCHA 插件
         run: |
           sudo apt-get update
           sudo apt-get install -y p7zip-full wget xvfb curl
           mkdir -p scripts/extensions/nopecha
           
-          # 下载并解压 NopeCHA 插件
+          # 下载并解压 NopeCHA 扩展
           wget -q -L -O /tmp/nopecha.zip \
             https://github.com/NopeCHALLC/nopecha-extension/releases/download/0.6.1/chromium.zip || true
           
