@@ -74,7 +74,7 @@ def send_tg_photo(photo_path, caption=""):
 
 
 # ====================================================================
-# Patch NopeCHA 扩展
+# Patch NopeCHA 扩展 (开启语音/图片全自动打码)
 # ====================================================================
 def patch_nopecha(nopecha_path, api_key):
     if not api_key:
@@ -99,7 +99,7 @@ def patch_nopecha(nopecha_path, api_key):
 
         inject = f"""// NopeCHA-Inject
 (function(){{
-    const s={{enabled:true,key:"{api_key}",auto_solve_hcaptcha:true,auto_solve_recaptcha:true}};
+    const s={{enabled:true,key:"{api_key}",auto_solve_hcaptcha:true,auto_solve_recaptcha:true,recaptcha_solve_method:"image"}};
     function applySettings(){{
         if (typeof chrome !== 'undefined' && chrome.storage) {{
             if (chrome.storage.local) chrome.storage.local.set({{settings:s, key:"{api_key}"}});
@@ -168,23 +168,25 @@ def renew_vps():
             page.fill("input[name='password']", PASSWORD)
             log("已填写账号密码")
 
-            log("等待 NopeCHA 扩展自动破解 reCAPTCHA 验证码...")
+            log("等待 NopeCHA 自动破解九宫格验证码（给足 120 秒）...")
             solved = False
-            for i in range(45):
+            for i in range(120):
+                # 检查隐藏框是否已经拿到 token
                 solved = page.evaluate("""() => {
                     const ta = document.getElementById('g-recaptcha-response');
                     return ta && ta.value && ta.value.length > 0;
                 }""")
                 if solved:
-                    log(f"验证码已由 NopeCHA 自动解开 ✅（耗时 {i+1} 秒）")
+                    log(f"🎉 验证码已完全解开 ✅（耗时 {i+1} 秒）")
                     break
                 time.sleep(1)
 
             if not solved:
-                log("NopeCHA 解码超时，尝试强行提交...", "WARN")
+                log("NopeCHA 120秒解题超时，尝试强行提交...", "WARN")
 
-            # 强行触发表单提交，避免被验证码弹窗遮罩拦截
+            # 无论如何尝试提交
             log("正在提交登录表单...")
+            time.sleep(2)
             try:
                 page.evaluate("""() => {
                     const btn = document.querySelector("button[type='submit']") || document.getElementById('login');
@@ -198,7 +200,7 @@ def renew_vps():
                 log(f"JS 提交失败，使用强行点击: {e}", "WARN")
                 page.click("button[type='submit']", force=True)
 
-            time.sleep(5)
+            time.sleep(6)
 
             if "login" in page.url.lower():
                 log("登录失败，停留在登录界面", "ERROR")
