@@ -1,6 +1,6 @@
 """
 VPSFree.es 自动续期脚本
-使用 NopeCHA 自动解验证码，续期后推送 TG 通知+截图
+使用 NopeCHA 扩展自动解 reCAPTCHA，续期后推送 TG 通知+截图
 """
 
 import os
@@ -14,6 +14,8 @@ EMAIL = os.environ.get("VPS_EMAIL", "")
 PASSWORD = os.environ.get("VPS_PASSWORD", "")
 NOPECHA_KEY = os.environ.get("NOPECHA_KEY", "").strip()
 MANAGER_URL = "https://manager.vpsfree.es"
+EXT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "scripts", "extensions", "nopecha", "unpacked")
 
 # Telegram 推送配置
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "").strip()
@@ -26,11 +28,11 @@ def log(msg, level="INFO"):
 
 
 # ====================================================================
-# Telegram 推送 (带详细日志)
+# Telegram 推送
 # ====================================================================
 def send_tg_text(text):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
-        log("未配置 TG_BOT_TOKEN 或 TG_CHAT_ID，跳过发送", "WARN")
+        log("未配置 TG 推送，跳过", "WARN")
         return False
     try:
         url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
@@ -40,24 +42,18 @@ def send_tg_text(text):
             "parse_mode": "HTML",
             "disable_web_page_preview": True
         }, timeout=15)
-        res_json = resp.json()
-        if res_json.get("ok"):
-            log("TG 文本消息已成功发送 ✅")
-            return True
-        else:
-            log(f"TG 文本发送被拒绝: {res_json}", "ERROR")
-            return False
+        return resp.json().get("ok", False)
     except Exception as e:
-        log(f"TG 文本发送网络异常: {e}", "ERROR")
+        log(f"TG 发送异常: {e}", "ERROR")
         return False
 
 
 def send_tg_photo(photo_path, caption=""):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
-        log("未配置 TG_BOT_TOKEN 或 TG_CHAT_ID，跳过图片发送", "WARN")
+        log("未配置 TG 推送，跳过", "WARN")
         return False
     if not os.path.exists(photo_path):
-        log(f"截图文件不存在: {photo_path}", "WARN")
+        log(f"截图不存在: {photo_path}", "WARN")
         return send_tg_text(caption)
     try:
         url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendPhoto"
@@ -70,52 +66,58 @@ def send_tg_photo(photo_path, caption=""):
             log("TG 图片消息已成功发送 ✅")
             return True
         else:
-            log(f"TG 图片发送被拒绝: {res_json}，尝试退回发送纯文本...", "ERROR")
+            log(f"TG 图片发送失败: {res_json}，改发纯文本...", "WARN")
             return send_tg_text(caption)
     except Exception as e:
-        log(f"TG 图片发送异常: {e}", "ERROR")
+        log(f"TG 发送异常: {e}", "ERROR")
         return send_tg_text(caption)
 
 
 # ====================================================================
-# NopeCHA API 自动人机验证
+# Patch NopeCHA 扩展
 # ====================================================================
-def solve_recaptcha_nopecha(website_url, site_key):
-    if not NOPECHA_KEY:
-        log("未配置 NOPECHA_KEY", "ERROR")
-        return None
+def patch_nopecha(nopecha_path, api_key):
+    if not api_key:
+        log("未设置 NOPECHA_KEY", "WARN")
+        return False
 
-    log("正在通过 NopeCHA API 提交人机验证任务...")
+    bg = os.path.join(nopecha_path, "assets", "qrmm9f.js")
+    if not os.path.exists(bg):
+        bg = os.path.join(nopecha_path, "background.js")
+
+    if not os.path.exists(bg):
+        log(f"未匹配到 NopeCHA 入口文件: {bg}", "ERROR")
+        return False
+
     try:
-        res = requests.post("https://api.nopecha.com/", json={
-            "key": NOPECHA_KEY,
-            "type": "recaptcha2",
-            "url": website_url,
-            "sitekey": site_key
-        }, timeout=20).json()
+        with open(bg, "r", encoding="utf-8") as f:
+            content = f.read()
 
-        if "error" in res:
-            log(f"NopeCHA 任务创建失败: {res.get('message') or res.get('error')}", "ERROR")
-            return None
+        if "// NopeCHA-Inject" in content:
+            log("NopeCHA 插件已注入 Key，跳过")
+            return True
 
-        task_id = res.get("data")
-        log(f"NopeCHA 任务 ID: {task_id}，等待解码...")
+        inject = f"""// NopeCHA-Inject
+(function(){{
+    const s={{enabled:true,key:"{api_key}",auto_solve_hcaptcha:true,auto_solve_recaptcha:true}};
+    function applySettings(){{
+        if (typeof chrome !== 'undefined' && chrome.storage) {{
+            if (chrome.storage.local) chrome.storage.local.set({{settings:s, key:"{api_key}"}});
+            if (chrome.storage.sync) chrome.storage.sync.set({{settings:s, key:"{api_key}"}});
+        }}
+    }}
+    applySettings();
+    setTimeout(applySettings, 1000);
+    setTimeout(applySettings, 3000);
+}})();\n"""
+        with open(bg, "w", encoding="utf-8") as f:
+            f.write(inject + content)
 
-        for _ in range(30):
-            time.sleep(3)
-            result = requests.get(f"https://api.nopecha.com/?key={NOPECHA_KEY}&id={task_id}", timeout=15).json()
-            if "data" in result and isinstance(result["data"], str):
-                log("✅ NopeCHA 解码成功！")
-                return result["data"]
-            elif "error" in result and result.get("error") != "incomplete":
-                log(f"NopeCHA 解码失败: {result.get('error')}", "ERROR")
-                return None
-
-        log("NopeCHA 解码超时", "ERROR")
-        return None
+        log("✅ NopeCHA API Key 注入插件成功！")
+        return True
     except Exception as e:
-        log(f"NopeCHA API 请求异常: {e}", "ERROR")
-        return None
+        log(f"Patch 失败: {e}", "ERROR")
+        return False
 
 
 # ====================================================================
@@ -125,17 +127,31 @@ def renew_vps():
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        log("请先安装 Playwright: pip install playwright", "ERROR")
+        log("请先安装 Playwright", "ERROR")
         return False
 
-    is_ci = "GITHUB_ACTIONS" in os.environ
-    log(f"运行环境: {'GitHub Actions' if is_ci else '本地'}")
+    ext_ok = os.path.exists(EXT_PATH) and os.path.exists(os.path.join(EXT_PATH, "manifest.json"))
+    if ext_ok and NOPECHA_KEY:
+        patch_nopecha(EXT_PATH, NOPECHA_KEY)
+    else:
+        log("未成功加载 NopeCHA 插件或缺少 Key", "WARN")
 
     with sync_playwright() as p:
+        launch_args = [
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+        ]
+        if ext_ok:
+            launch_args.extend([
+                f"--disable-extensions-except={EXT_PATH}",
+                f"--load-extension={EXT_PATH}",
+            ])
+
+        # 在 xvfb 虚拟屏幕下使用 headless=False，可以完全避开无头插件冻结机制！
         browser = p.chromium.launch_persistent_context(
             user_data_dir="/tmp/playwright-data",
-            headless=is_ci,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
+            headless=False,
+            args=launch_args,
             viewport={"width": 1280, "height": 800},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             locale="en-US",
@@ -147,48 +163,26 @@ def renew_vps():
         try:
             log("打开登录页...")
             page.goto(f"{MANAGER_URL}/login", wait_until="networkidle", timeout=30000)
-            time.sleep(3)
+            time.sleep(2)
 
             page.fill("input[name='username']", EMAIL)
             page.fill("input[name='password']", PASSWORD)
             log("已填写账号密码")
 
-            # 提取 SiteKey
-            site_key = page.evaluate("""() => {
-                const selectors = ['.g-recaptcha', '[data-sitekey]', '#g-recaptcha'];
-                for (const s of selectors) {
-                    const el = document.querySelector(s);
-                    if (el && el.getAttribute('data-sitekey')) return el.getAttribute('data-sitekey');
-                }
-                const iframes = Array.from(document.querySelectorAll('iframe'));
-                for (const iframe of iframes) {
-                    const src = iframe.getAttribute('src') || '';
-                    if (src.includes('recaptcha')) {
-                        const m = src.match(/k=([^&]+)/);
-                        if (m) return m[1];
-                    }
-                }
-                const match = document.body.innerHTML.match(/data-sitekey=["']([^"']+)["']/);
-                return match ? match[1] : null;
-            }""")
+            log("等待 NopeCHA 扩展自动破解 reCAPTCHA 验证码...")
+            solved = False
+            for i in range(45):
+                solved = page.evaluate("""() => {
+                    const ta = document.getElementById('g-recaptcha-response');
+                    return ta && ta.value && ta.value.length > 0;
+                }""")
+                if solved:
+                    log(f"验证码已由 NopeCHA 自动解开 ✅（耗时 {i+1} 秒）")
+                    break
+                time.sleep(1)
 
-            if site_key:
-                log(f"提取到 SiteKey: {site_key}")
-                token = solve_recaptcha_nopecha(page.url, site_key)
-                if token:
-                    page.evaluate(f"""(token) => {{
-                        let el = document.getElementById('g-recaptcha-response');
-                        if (!el) {{
-                            el = document.createElement('textarea');
-                            el.id = 'g-recaptcha-response';
-                            el.name = 'g-recaptcha-response';
-                            el.style.display = 'none';
-                            document.forms[0].appendChild(el);
-                        }}
-                        el.innerHTML = token;
-                        el.value = token;
-                    }}""", token)
-                    log("已注入验证码 Token ✅")
+            if not solved:
+                log("NopeCHA 解码超时，尝试直接点击提交...", "WARN")
 
             page.click("button[type='submit']")
             time.sleep(5)
@@ -202,7 +196,7 @@ def renew_vps():
             return do_renew(page)
 
         except Exception as e:
-            log(f"执行中断异常: {e}", "ERROR")
+            log(f"运行流程异常: {e}", "ERROR")
             try:
                 page.screenshot(path="renew_error.png")
             except:
@@ -224,11 +218,11 @@ def do_renew(page):
             manage_btn.click()
             log("点击 Manage 成功 ✅")
         else:
-            log("未发现 Manage 按钮，保存当前页面截图", "WARN")
+            log("未发现 Manage 按钮", "WARN")
             page.screenshot(path="no_manage_btn.png")
             return False
     except Exception as e:
-        log(f"点击 Manage 异常: {e}", "ERROR")
+        log(f"点击 Manage 失败: {e}", "ERROR")
         page.screenshot(path="no_manage_btn.png")
         return False
 
@@ -246,10 +240,9 @@ def do_renew(page):
         else:
             log("未找到续期按钮（可能已续期或未到期）", "WARN")
             page.screenshot(path="no_renew_btn.png")
-            # 即便按钮没找到，截个图发给 TG
             return True
     except Exception as e:
-        log(f"点击续期按钮失败: {e}", "ERROR")
+        log(f"点击续期按钮异常: {e}", "ERROR")
         page.screenshot(path="no_renew_btn.png")
         return False
 
@@ -274,7 +267,7 @@ def main():
     log("=" * 40)
 
     if not EMAIL or not PASSWORD:
-        log("缺少必要的 VPS_EMAIL 或 VPS_PASSWORD 环境变量！", "ERROR")
+        log("缺少 VPS_EMAIL 或 VPS_PASSWORD 环境变量！", "ERROR")
         sys.exit(1)
 
     log(f"正在处理账号: {EMAIL}")
@@ -283,32 +276,32 @@ def main():
     success = renew_vps()
 
     if success:
-        log("流程完成，尝试发送 TG 成功通知...")
+        log("续期流程完成，正在发送 TG 成功通知...")
         caption = (
             f"✅ <b>VPSFree 自动续期成功</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"📧 账号: {EMAIL}\n"
             f"⏰ 时间: {now}\n"
+            f"🔁 下次续期: 7天后\n"
             f"━━━━━━━━━━━━━━━━\n"
-            f"🖼 详细截图见下方"
+            f"🖼 页面截图如下"
         )
-        # 优先发成功的截图，没有就寻找页面最后的截图
         shot_path = "renew_success.png"
         if not os.path.exists(shot_path):
-            for path in ["no_renew_btn.png", "no_manage_btn.png"]:
-                if os.path.exists(path):
-                    shot_path = path
+            for p in ["no_renew_btn.png", "no_manage_btn.png"]:
+                if os.path.exists(p):
+                    shot_path = p
                     break
 
         send_tg_photo(shot_path, caption)
     else:
-        log("流程失败，尝试发送 TG 失败通知...", "ERROR")
+        log("续期流程失败，正在发送 TG 失败通知...", "ERROR")
         caption = (
             f"❌ <b>VPSFree 续期失败</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"📧 账号: {EMAIL}\n"
             f"⏰ 时间: {now}\n"
-            f"💡 请登录后台查看"
+            f"💡 请手动登录后台检查"
         )
         for shot in ["login_failed.png", "renew_error.png", "no_manage_btn.png"]:
             if os.path.exists(shot):
