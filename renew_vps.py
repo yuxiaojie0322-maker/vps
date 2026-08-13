@@ -13,8 +13,8 @@ from datetime import datetime
 from pathlib import Path
 
 # ========== 配置 ==========
-EMAIL = os.environ.get("VPS_EMAIL", "yuxiaojie0322@gmail.com")
-PASSWORD = os.environ.get("VPS_PASSWORD", "YxJ223512@")
+EMAIL = os.environ.get("VPS_EMAIL", "")
+PASSWORD = os.environ.get("VPS_PASSWORD", "")
 MANAGER_URL = "https://manager.vpsfree.es"
 COOKIE_FILE = "vpsfree_cookies.pkl"
 EXT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -344,7 +344,7 @@ def main():
     log("=" * 40)
 
     if not EMAIL or not PASSWORD:
-        log("错误：未设置邮箱或密码", "ERROR")
+        log("错误：未设置环境变量 VPS_EMAIL 或 VPS_PASSWORD", "ERROR")
         sys.exit(1)
 
     log(f"账号: {EMAIL}")
@@ -354,7 +354,6 @@ def main():
 
     if success:
         log("✅ 续期成功！")
-        # TG 推送：成功截图
         caption = (
             f"✅ <b>VPSFree 续期成功</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
@@ -368,7 +367,6 @@ def main():
         sys.exit(0)
     else:
         log("❌ 续期失败", "ERROR")
-        # TG 推送：失败截图
         caption = (
             f"❌ <b>VPSFree 续期失败</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
@@ -378,7 +376,6 @@ def main():
             f"━━━━━━━━━━━━━━━━\n"
             f"🖼 下方为失败时页面截图"
         )
-        # 尝试发送最相关的截图
         for shot in ["renew_error.png", "no_renew_btn.png", "no_manage_btn.png", "login_failed.png"]:
             if os.path.exists(shot):
                 send_tg_photo(shot, caption)
