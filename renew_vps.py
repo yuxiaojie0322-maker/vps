@@ -1,8 +1,8 @@
 """
 VPSFree.es 自动续期脚本 (Xvfb + NopeCHA 增强版)
 - 支持标准代理 (PROXY_URL) 自动清洗与容错
-- 增加了主动点击 reCAPTCHA 勾选框逻辑，唤醒 NopeCHA 插件破解
-- 自动确认续期并发送 Telegram 截图通知
+- 增加了穿透遮罩的 reCAPTCHA 复选框强点击与 JS 兜底触发逻辑
+- 自动确认续期并发送 Telegram 截图与报错通知
 """
 
 import os
@@ -180,16 +180,34 @@ def renew_vps():
             page.fill("input[name='password']", PASSWORD)
             log("已填写账号密码")
 
-            # 主动点击 reCAPTCHA 复选框以触发验证与插件自动破解
+            # 主动点击 reCAPTCHA 复选框（使用 force=True 穿透遮罩 + JS 兜底）
             log("主动点击触发 reCAPTCHA 验证框...")
             try:
                 recaptcha_frame = page.frame_locator('iframe[title*="reCAPTCHA"]')
                 checkbox = recaptcha_frame.locator('.recaptcha-checkbox-border')
-                if checkbox.is_visible(timeout=5000):
-                    checkbox.click()
-                    log("成功点击验证码复选框 👆")
+                # 强行点击穿透遮罩，超时缩短为 5 秒
+                checkbox.click(force=True, timeout=5000)
+                log("成功强行点击验证码复选框 👆")
             except Exception as e:
-                log(f"尝试自动点击验证码框提示: {e}", "WARN")
+                log(f"强制点击触发异常，尝试通过 JS 触发表单内唤醒: {e}", "WARN")
+                try:
+                    page.evaluate("""() => {
+                        const iframes = Array.from(document.querySelectorAll('iframe'));
+                        for (const frame of iframes) {
+                            if (frame.title && frame.title.includes('reCAPTCHA')) {
+                                const doc = frame.contentDocument || frame.contentWindow.document;
+                                const cb = doc.querySelector('.recaptcha-checkbox-border') || doc.querySelector('#recaptcha-anchor');
+                                if (cb) {
+                                    cb.click();
+                                    return true;
+                                }
+                            }
+                        }
+                        return false;
+                    }""")
+                    log("已尝试通过 JS 强行唤醒验证码复选框 ⚡")
+                except Exception as js_err:
+                    log(f"JS 唤醒提示: {js_err}", "WARN")
 
             log("等待 NopeCHA 扩展破解验证码（最多等待 60 秒）...")
             solved = False
