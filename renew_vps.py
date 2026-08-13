@@ -177,7 +177,11 @@ def renew_vps():
             patch_nopecha(EXT_PATH, nopecha_key)
 
     with sync_playwright() as p:
-        launch_args = ["--no-sandbox", "--disable-dev-shm-usage"]
+        launch_args = [
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-bg-extension-lifetime-time-limit"
+        ]
         if ext_ok:
             launch_args.extend([
                 f"--disable-extensions-except={EXT_PATH}",
@@ -193,7 +197,7 @@ def renew_vps():
             headless=is_ci,
             args=launch_args,
             viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             locale="en-US",
             bypass_csp=True,
             ignore_https_errors=True,
@@ -221,28 +225,33 @@ def renew_vps():
             # 登录
             log("打开登录页...")
             page.goto(f"{MANAGER_URL}/login", wait_until="networkidle", timeout=30000)
-            time.sleep(2)
+            time.sleep(3)
 
             page.fill("input[name='username']", EMAIL)
             page.fill("input[name='password']", PASSWORD)
             log("已填写邮箱和密码")
 
             if ext_ok:
-                log("等待 NopeCHA 自动解验证码...")
-                for i in range(30):
+                log("等待 NopeCHA 自动解验证码（最多等待 60 秒）...")
+                solved = False
+                for i in range(60):
+                    # 检查是否有响应值或者 iframe 内标记
                     solved = page.evaluate("""() => {
                         const ta = document.getElementById('g-recaptcha-response');
                         return ta && ta.value && ta.value.length > 0;
                     }""")
                     if solved:
-                        log(f"验证码已自动解除 ✅（{i+1}秒）")
+                        log(f"验证码已自动解除 ✅（耗时 {i+1} 秒）")
                         break
                     time.sleep(1)
-                else:
-                    log("NopeCHA 未能在30秒内解除验证码", "WARN")
+                
+                if not solved:
+                    log("NopeCHA 未能在 60 秒内解除验证码", "WARN")
 
+            # 无论如何点击一次登录提交
+            time.sleep(1)
             page.click("button[type='submit']")
-            time.sleep(3)
+            time.sleep(5)
 
             if "login" in page.url.lower():
                 log("登录失败", "ERROR")
