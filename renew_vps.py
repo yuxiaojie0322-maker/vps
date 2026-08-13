@@ -1,6 +1,6 @@
 """
 VPSFree.es 自动续期脚本
-使用 CapSolver 扩展自动解 reCAPTCHA，续期后推送 TG 通知+截图
+使用 NopeCHA 扩展自动解 reCAPTCHA，续期后推送 TG 通知+截图
 """
 
 import os
@@ -18,7 +18,7 @@ PASSWORD = os.environ.get("VPS_PASSWORD", "")
 MANAGER_URL = "https://manager.vpsfree.es"
 COOKIE_FILE = "vpsfree_cookies.pkl"
 EXT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "scripts", "extensions", "capsolver", "unpacked")
+                        "scripts", "extensions", "nopecha", "unpacked")
 
 # Telegram 推送配置
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
@@ -74,36 +74,81 @@ def send_tg_photo(photo_path, caption=""):
 
 
 # ====================================================================
-# CapSolver 扩展 Patch (注入 API Key)
+# NopeCHA 额度检查
 # ====================================================================
-def patch_capsolver(capsolver_path, api_key):
+def check_nopecha_availability():
+    raw_key = os.environ.get("NOPECHA_KEY", "").strip()
+    keys = [k.strip() for k in raw_key.splitlines() if k.strip()] if raw_key else []
+    session = requests.Session()
+
+    for idx, key in enumerate(keys, start=1):
+        try:
+            resp = session.get(f"https://api.nopecha.com/v1/status?key={key}", timeout=15)
+            data = resp.json()
+            if "error" not in data and data.get("credit", 0) > 0:
+                log(f"✅ 找到有效 Key #{idx}，额度: {data['credit']}")
+                return key, None
+            else:
+                log(f"Key #{idx} 无额度或无效")
+        except Exception as e:
+            log(f"Key #{idx} 状态查询失败: {e}", "WARN")
+
+    if keys:
+        log("所有 Key 均无可用额度，回退到试用模式")
+
+    try:
+        resp = session.get("https://api.nopecha.com/v1/status", timeout=15)
+        data = resp.json()
+        if "error" not in data and data.get("credit", 0) > 0:
+            log("✅ 当前 IP 具备试用资格，使用试用模式")
+            return "", None
+        else:
+            msg = "当前 IP 不具备试用资格" if "error" in data else "试用额度已用尽"
+            log(msg, "ERROR")
+    except Exception as e:
+        log(f"试用状态查询失败: {e}", "ERROR")
+
+    if keys:
+        return "", "已尝试全部 NopeCHA Key 但均无额度，且当前 IP 不符合试用资格"
+    return "", "未配置 NopeCHA Key，且当前 IP 不具备试用资格"
+
+
+# ====================================================================
+# NopeCHA 扩展 Patch
+# ====================================================================
+def patch_nopecha(nopecha_path, api_key):
     if not api_key:
-        log("未提供 CapSolver Key", "ERROR")
+        log("使用试用模式，无需 Patch")
         return False
 
-    config_file = os.path.join(capsolver_path, "assets", "config.js")
-    if not os.path.exists(config_file):
-        log(f"CapSolver 配置文件未找到: {config_file}", "ERROR")
+    bg = os.path.join(nopecha_path, "assets", "qrmm9f.js")
+    if not os.path.exists(bg):
+        bg = os.path.join(nopecha_path, "background.js")
+    if not os.path.exists(bg):
+        log(f"background.js 不存在: {bg}", "ERROR")
         return False
 
     try:
-        with open(config_file, "r", encoding="utf-8") as f:
+        with open(bg, encoding="utf-8") as f:
             content = f.read()
-
-        # 将 apiKey 修改为传入的变量
-        import re
-        new_content = re.sub(r'apiKey:\s*["\'].*?["\']', f'apiKey: "{api_key}"', content)
-        
-        # 确保自动解决开关打开
-        new_content = re.sub(r'useCapsolver:\s*false', 'useCapsolver: true', new_content)
-
-        with open(config_file, "w", encoding="utf-8") as f:
-            f.write(new_content)
-
-        log("✅ CapSolver Key 注入成功")
+        if "NopeCHA-Inject" in content:
+            log("NopeCHA 已注入过，跳过")
+            return True
+        inject = f"""// NopeCHA-Inject
+(function(){{
+    const s={{enabled:true,key:"{api_key}",auto_solve_hcaptcha:true,auto_solve_recaptcha:true}};
+    function w(){{
+        chrome.storage.local.set({{settings:s,key:"{api_key}"}});
+        chrome.storage.sync&&chrome.storage.sync.set({{settings:s,key:"{api_key}"}});
+    }}
+    w();setTimeout(w,1000);setTimeout(w,3000);
+}})();\n"""
+        with open(bg, "w", encoding="utf-8") as f:
+            f.write(inject + content)
+        log("✅ NopeCHA Key 注入成功")
         return True
     except Exception as e:
-        log(f"CapSolver Patch 失败: {e}", "ERROR")
+        log(f"Patch 失败: {e}", "ERROR")
         return False
 
 
@@ -121,12 +166,15 @@ def renew_vps():
         os.path.join(EXT_PATH, "manifest.json")
     )
 
-    capsolver_key = os.environ.get("CAPSOLVER_KEY", "").strip()
-    if ext_ok and capsolver_key:
-        patch_capsolver(EXT_PATH, capsolver_key)
-    else:
-        log("未检测到有效 CapSolver 插件或未配置 CAPSOLVER_KEY", "WARN")
-        ext_ok = False
+    nopecha_key = None
+    if ext_ok:
+        nopecha_key, err = check_nopecha_availability()
+        if err:
+            log(f"NopeCHA 不可用: {err}", "ERROR")
+            log("将尝试无扩展模式运行（仅本地有头模式可用）", "WARN")
+            ext_ok = False
+        else:
+            patch_nopecha(EXT_PATH, nopecha_key)
 
     with sync_playwright() as p:
         launch_args = ["--no-sandbox", "--disable-dev-shm-usage"]
@@ -138,7 +186,7 @@ def renew_vps():
 
         is_ci = "GITHUB_ACTIONS" in os.environ
         log(f"运行环境: {'GitHub Actions' if is_ci else '本地'}" +
-            (f" + CapSolver" if ext_ok else ""))
+            (f" + NopeCHA" if ext_ok else ""))
 
         browser = p.chromium.launch_persistent_context(
             user_data_dir="/tmp/playwright-data",
@@ -180,8 +228,8 @@ def renew_vps():
             log("已填写邮箱和密码")
 
             if ext_ok:
-                log("等待 CapSolver 自动解验证码...")
-                for i in range(40):
+                log("等待 NopeCHA 自动解验证码...")
+                for i in range(30):
                     solved = page.evaluate("""() => {
                         const ta = document.getElementById('g-recaptcha-response');
                         return ta && ta.value && ta.value.length > 0;
@@ -191,7 +239,7 @@ def renew_vps():
                         break
                     time.sleep(1)
                 else:
-                    log("CapSolver 未能在40秒内解除验证码", "WARN")
+                    log("NopeCHA 未能在30秒内解除验证码", "WARN")
 
             page.click("button[type='submit']")
             time.sleep(3)
