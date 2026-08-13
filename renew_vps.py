@@ -1,8 +1,8 @@
 """
 VPSFree.es 自动续期脚本 (Xvfb + NopeCHA 增强版)
-- 支持自动清洗 SOCKS5/HTTP 代理中的 # 备注后缀，防止连接崩溃
-- 使用 NopeCHA 扩展自动破解 reCAPTCHA 验证码
-- 自动确认续期并发送 TG 截图与失败报警通知
+- 支持标准代理 (PROXY_URL) 自动清洗与容错
+- 增加了主动点击 reCAPTCHA 勾选框逻辑，唤醒 NopeCHA 插件破解
+- 自动确认续期并发送 Telegram 截图通知
 """
 
 import os
@@ -89,7 +89,7 @@ def patch_nopecha(nopecha_path, api_key):
         bg = os.path.join(nopecha_path, "background.js")
 
     if not os.path.exists(bg):
-        log(f"未找到 NopeCHA 入口文件: {bg}", "ERROR")
+        log(f"未找到 NopeCHA 入口文件: {bg}", "WARN")
         return False
 
     try:
@@ -179,6 +179,17 @@ def renew_vps():
             page.fill("input[name='username']", EMAIL)
             page.fill("input[name='password']", PASSWORD)
             log("已填写账号密码")
+
+            # 主动点击 reCAPTCHA 复选框以触发验证与插件自动破解
+            log("主动点击触发 reCAPTCHA 验证框...")
+            try:
+                recaptcha_frame = page.frame_locator('iframe[title*="reCAPTCHA"]')
+                checkbox = recaptcha_frame.locator('.recaptcha-checkbox-border')
+                if checkbox.is_visible(timeout=5000):
+                    checkbox.click()
+                    log("成功点击验证码复选框 👆")
+            except Exception as e:
+                log(f"尝试自动点击验证码框提示: {e}", "WARN")
 
             log("等待 NopeCHA 扩展破解验证码（最多等待 60 秒）...")
             solved = False
