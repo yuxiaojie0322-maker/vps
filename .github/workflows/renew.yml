@@ -2,8 +2,8 @@ name: VPSFree 自动续期
 
 on:
   schedule:
-    - cron: "0 2 */7 * *"   # 每7天凌晨2点运行
-  workflow_dispatch:          # 支持手动触发
+    - cron: "0 2 */7 * *"   # 每7天凌晨2点
+  workflow_dispatch:
 
 jobs:
   renew:
@@ -23,7 +23,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
             libcups2 libdrm2 libdbus-1-3 libxkbcommon0 libxcomposite1 libxdamage1 \
-            libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2
+            libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2 \
+            p7zip-full wget
+
+      - name: 下载并解压 NopeCHA 扩展
+        run: |
+          mkdir -p scripts/extensions/nopecha
+          wget -q -O /tmp/nopecha.zip \
+            https://github.com/NopeCHALLC/nopecha-extension/releases/download/0.6.1/chromium.zip
+          7z x -y /tmp/nopecha.zip -oscripts/extensions/nopecha/unpacked
+          echo "NopeCHA 扩展已下载"
 
       - name: 安装 Python 依赖
         run: |
@@ -34,19 +43,22 @@ jobs:
         env:
           VPS_EMAIL: ${{ secrets.VPS_EMAIL }}
           VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
-          CAPTCHA_KEY: ${{ secrets.CAPTCHA_KEY }}
+          NOPECHA_KEY: ${{ secrets.NOPECHA_KEY }}
         run: |
           python renew_vps.py
 
-      - name: 上传截图（失败时调试用）
-        if: failure()
+      - name: 上传截图（调试用）
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: debug-screenshots
-          path: /tmp/renew_*.png
+          path: |
+            renew_*.png
+            login_*.png
+            no_*.png
           retention-days: 7
 
-      - name: 发送通知（续期失败时）
+      - name: 通知失败
         if: failure()
         uses: actions/github-script@v7
         with:
