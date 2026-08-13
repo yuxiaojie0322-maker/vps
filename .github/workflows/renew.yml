@@ -28,7 +28,7 @@ jobs:
         env:
           VPS_EMAIL: ${{ secrets.VPS_EMAIL }}
           VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
-          CAPSOLVER_KEY: ${{ secrets.CAPSOLVER_KEY }}
+          NOPECHA_KEY: ${{ secrets.NOPECHA_KEY }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: |
