@@ -103,7 +103,6 @@ def renew_vps():
         # 配置代理节点（如果设置了 PROXY_URL）
         proxy_config = None
         if PROXY_URL:
-            # 兼容处理 SOCKS5 scheme 转换
             clean_proxy = PROXY_URL.replace("socks5://", "socks5://")
             log(f"🌐 已检测到代理配置，将使用代理链接: {clean_proxy.split('@')[-1]}")
             proxy_config = {"server": clean_proxy}
