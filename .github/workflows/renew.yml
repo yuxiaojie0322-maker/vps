@@ -2,8 +2,8 @@ name: VPSFree 自动续期
 
 on:
   schedule:
-    - cron: "0 2 */7 * *"   # 每7天凌晨2点
-  workflow_dispatch:
+    - cron: "0 2 */7 * *"   # 每7天凌晨2点执行
+  workflow_dispatch:        # 支持手动触发执行
 
 jobs:
   renew:
@@ -18,25 +18,20 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: 安装系统依赖
+      - name: 安装系统工具与下载解压 NopeCHA 扩展
         run: |
           sudo apt-get update
-          sudo apt-get install -y libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
-            libcups2 libdrm2 libdbus-1-3 libxkbcommon0 libxcomposite1 libxdamage1 \
-            libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2 \
-            p7zip-full wget
-
-      - name: 下载并解压 NopeCHA 扩展
-        run: |
+          sudo apt-get install -y p7zip-full wget
           mkdir -p scripts/extensions/nopecha
           wget -q -O /tmp/nopecha.zip \
             https://github.com/NopeCHALLC/nopecha-extension/releases/download/0.6.1/chromium.zip
           7z x -y /tmp/nopecha.zip -oscripts/extensions/nopecha/unpacked
           echo "NopeCHA 扩展已下载"
 
-      - name: 安装 Python 依赖
+      - name: 安装 Python 依赖与 Playwright 完整系统环境
         run: |
           pip install playwright requests
+          sudo $(which playwright) install-deps chromium
           playwright install chromium
 
       - name: 执行续期
