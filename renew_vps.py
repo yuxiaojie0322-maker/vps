@@ -1,6 +1,6 @@
 """
 VPSFree.es 自动续期脚本
-使用 NopeCHA 扩展自动解 reCAPTCHA，续期后推送 TG 通知+截图
+使用 CapSolver API 自动通过 reCAPTCHA，续期后推送 TG 通知+截图
 """
 
 import os
@@ -15,10 +15,9 @@ from pathlib import Path
 # ========== 配置 ==========
 EMAIL = os.environ.get("VPS_EMAIL", "")
 PASSWORD = os.environ.get("VPS_PASSWORD", "")
+CAPSOLVER_KEY = os.environ.get("CAPSOLVER_KEY", "").strip()
 MANAGER_URL = "https://manager.vpsfree.es"
 COOKIE_FILE = "vpsfree_cookies.pkl"
-EXT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "scripts", "extensions", "nopecha", "unpacked")
 
 # Telegram 推送配置
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
@@ -74,82 +73,51 @@ def send_tg_photo(photo_path, caption=""):
 
 
 # ====================================================================
-# NopeCHA 额度检查
+# CapSolver API 直接破解 reCAPTCHA v2
 # ====================================================================
-def check_nopecha_availability():
-    raw_key = os.environ.get("NOPECHA_KEY", "").strip()
-    keys = [k.strip() for k in raw_key.splitlines() if k.strip()] if raw_key else []
-    session = requests.Session()
+def solve_recaptcha_v2(website_url, site_key):
+    if not CAPSOLVER_KEY:
+        log("未配置 CAPSOLVER_KEY，无法调用 API 解码", "ERROR")
+        return None
 
-    for idx, key in enumerate(keys, start=1):
-        try:
-            resp = session.get(f"https://api.nopecha.com/v1/status?key={key}", timeout=15)
-            data = resp.json()
-            if "error" not in data and data.get("credit", 0) > 0:
-                log(f"✅ 找到有效 Key #{idx}，额度: {data['credit']}")
-                return key, None
-            else:
-                log(f"Key #{idx} 无额度或无效")
-        except Exception as e:
-            log(f"Key #{idx} 状态查询失败: {e}", "WARN")
-
-    if keys:
-        log("所有 Key 均无可用额度，回退到试用模式")
+    log("正在通过 CapSolver API 提交人机验证任务...")
+    task_url = "https://api.capsolver.com/createTask"
+    payload = {
+        "clientKey": CAPSOLVER_KEY,
+        "task": {
+            "type": "ReCaptchaV2TaskProxyLess",
+            "websiteURL": website_url,
+            "websiteKey": site_key
+        }
+    }
 
     try:
-        resp = session.get("https://api.nopecha.com/v1/status", timeout=15)
-        data = resp.json()
-        if "error" not in data and data.get("credit", 0) > 0:
-            log("✅ 当前 IP 具备试用资格，使用试用模式")
-            return "", None
-        else:
-            msg = "当前 IP 不具备试用资格" if "error" in data else "试用额度已用尽"
-            log(msg, "ERROR")
+        res = requests.post(task_url, json=payload, timeout=20).json()
+        if res.get("errorId") != 0:
+            log(f"CapSolver 创建任务失败: {res.get('errorDescription')}", "ERROR")
+            return None
+
+        task_id = res.get("taskId")
+        log(f"CapSolver 任务已创建，ID: {task_id}，等待解码...")
+
+        result_url = "https://api.capsolver.com/getTaskResult"
+        for _ in range(30):
+            time.sleep(3)
+            result = requests.post(result_url, json={"clientKey": CAPSOLVER_KEY, "taskId": task_id}, timeout=15).json()
+            status = result.get("status")
+            if status == "ready":
+                token = result.get("solution", {}).get("gRecaptchaResponse")
+                log("✅ CapSolver 人机验证解码成功！")
+                return token
+            elif status == "failed":
+                log("CapSolver 人机验证解码失败", "ERROR")
+                return None
+
+        log("CapSolver 人机验证超时", "ERROR")
+        return None
     except Exception as e:
-        log(f"试用状态查询失败: {e}", "ERROR")
-
-    if keys:
-        return "", "已尝试全部 NopeCHA Key 但均无额度，且当前 IP 不符合试用资格"
-    return "", "未配置 NopeCHA Key，且当前 IP 不具备试用资格"
-
-
-# ====================================================================
-# NopeCHA 扩展 Patch
-# ====================================================================
-def patch_nopecha(nopecha_path, api_key):
-    if not api_key:
-        log("使用试用模式，无需 Patch")
-        return False
-
-    bg = os.path.join(nopecha_path, "assets", "qrmm9f.js")
-    if not os.path.exists(bg):
-        bg = os.path.join(nopecha_path, "background.js")
-    if not os.path.exists(bg):
-        log(f"background.js 不存在: {bg}", "ERROR")
-        return False
-
-    try:
-        with open(bg, encoding="utf-8") as f:
-            content = f.read()
-        if "NopeCHA-Inject" in content:
-            log("NopeCHA 已注入过，跳过")
-            return True
-        inject = f"""// NopeCHA-Inject
-(function(){{
-    const s={{enabled:true,key:"{api_key}",auto_solve_hcaptcha:true,auto_solve_recaptcha:true}};
-    function w(){{
-        chrome.storage.local.set({{settings:s,key:"{api_key}"}});
-        chrome.storage.sync&&chrome.storage.sync.set({{settings:s,key:"{api_key}"}});
-    }}
-    w();setTimeout(w,1000);setTimeout(w,3000);
-}})();\n"""
-        with open(bg, "w", encoding="utf-8") as f:
-            f.write(inject + content)
-        log("✅ NopeCHA Key 注入成功")
-        return True
-    except Exception as e:
-        log(f"Patch 失败: {e}", "ERROR")
-        return False
+        log(f"请求 CapSolver API 出错: {e}", "ERROR")
+        return None
 
 
 # ====================================================================
@@ -162,40 +130,14 @@ def renew_vps():
         log("请先安装 Playwright: pip install playwright && playwright install chromium", "ERROR")
         return False
 
-    ext_ok = os.path.exists(EXT_PATH) and os.path.exists(
-        os.path.join(EXT_PATH, "manifest.json")
-    )
-
-    nopecha_key = None
-    if ext_ok:
-        nopecha_key, err = check_nopecha_availability()
-        if err:
-            log(f"NopeCHA 不可用: {err}", "ERROR")
-            log("将尝试无扩展模式运行（仅本地有头模式可用）", "WARN")
-            ext_ok = False
-        else:
-            patch_nopecha(EXT_PATH, nopecha_key)
+    is_ci = "GITHUB_ACTIONS" in os.environ
+    log(f"运行环境: {'GitHub Actions' if is_ci else '本地'}")
 
     with sync_playwright() as p:
-        launch_args = [
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-bg-extension-lifetime-time-limit"
-        ]
-        if ext_ok:
-            launch_args.extend([
-                f"--disable-extensions-except={EXT_PATH}",
-                f"--load-extension={EXT_PATH}",
-            ])
-
-        is_ci = "GITHUB_ACTIONS" in os.environ
-        log(f"运行环境: {'GitHub Actions' if is_ci else '本地'}" +
-            (f" + NopeCHA" if ext_ok else ""))
-
         browser = p.chromium.launch_persistent_context(
             user_data_dir="/tmp/playwright-data",
             headless=is_ci,
-            args=launch_args,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
             viewport={"width": 1280, "height": 800},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             locale="en-US",
@@ -205,50 +147,36 @@ def renew_vps():
         page = browser.pages[0] if browser.pages else browser.new_page()
 
         try:
-            # Cookie 恢复（仅本地）
-            if os.path.exists(COOKIE_FILE) and not is_ci:
-                log("找到保存的登录状态，尝试直接续期...")
-                with open(COOKIE_FILE, "rb") as f:
-                    cookies = pickle.load(f)
-                browser.add_cookies(cookies)
-
-                page.goto(f"{MANAGER_URL}/clientarea.php?action=products",
-                          wait_until="networkidle", timeout=30000)
-                time.sleep(2)
-
-                if "login" not in page.url.lower():
-                    log("Cookie 有效，无需重新登录 ✅")
-                    return do_renew(page, browser)
-
-                log("Cookie 已过期，需要重新登录")
-
-            # 登录
+            # 打开登录页
             log("打开登录页...")
             page.goto(f"{MANAGER_URL}/login", wait_until="networkidle", timeout=30000)
-            time.sleep(3)
+            time.sleep(2)
 
             page.fill("input[name='username']", EMAIL)
             page.fill("input[name='password']", PASSWORD)
             log("已填写邮箱和密码")
 
-            if ext_ok:
-                log("等待 NopeCHA 自动解验证码（最多等待 60 秒）...")
-                solved = False
-                for i in range(60):
-                    # 检查是否有响应值或者 iframe 内标记
-                    solved = page.evaluate("""() => {
-                        const ta = document.getElementById('g-recaptcha-response');
-                        return ta && ta.value && ta.value.length > 0;
-                    }""")
-                    if solved:
-                        log(f"验证码已自动解除 ✅（耗时 {i+1} 秒）")
-                        break
-                    time.sleep(1)
-                
-                if not solved:
-                    log("NopeCHA 未能在 60 秒内解除验证码", "WARN")
+            # 抓取页面上的 g-recaptcha sitekey 并调用 CapSolver API
+            site_key = page.evaluate("""() => {
+                const el = document.querySelector('.g-recaptcha');
+                return el ? el.getAttribute('data-sitekey') : null;
+            }""")
 
-            # 无论如何点击一次登录提交
+            if site_key:
+                log(f"检测到 reCAPTCHA，SiteKey: {site_key}")
+                token = solve_recaptcha_v2(page.url, site_key)
+                if token:
+                    # 将验证成功获得的 Token 直接填入隐藏字段
+                    page.evaluate(f"""(token) => {{
+                        document.getElementById('g-recaptcha-response').innerHTML = token;
+                        document.getElementById('g-recaptcha-response').value = token;
+                    }}""", token)
+                    log("已注入 reCAPTCHA Token 响应 ✅")
+                else:
+                    log("未能获取到验证码 Token，尝试直接提交...", "WARN")
+            else:
+                log("未在页面上提取到 sitekey", "WARN")
+
             time.sleep(1)
             page.click("button[type='submit']")
             time.sleep(5)
@@ -258,11 +186,6 @@ def renew_vps():
                 page.screenshot(path="login_failed.png")
                 return False
             log("登录成功 ✅")
-
-            if not is_ci:
-                cookies = browser.cookies()
-                with open(COOKIE_FILE, "wb") as f:
-                    pickle.dump(cookies, f)
 
             return do_renew(page, browser)
 
@@ -342,7 +265,7 @@ def do_renew(page, browser):
 # ====================================================================
 def main():
     log("=" * 40)
-    log("VPSFree 自动续期脚本")
+    log("VPSFree 自动续期脚本 (API 解码版)")
     log("=" * 40)
 
     if not EMAIL or not PASSWORD:
