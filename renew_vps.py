@@ -1,7 +1,7 @@
 """
-VPSFree.es 自动续期脚本 (Xvfb + NopeCHA 增强版)
-- 支持标准代理 (PROXY_URL) 自动清洗与容错
-- 增加了穿透遮罩的 reCAPTCHA 复选框强点击与 JS 兜底触发逻辑
+VPSFree.es 自动续期脚本 (Xvfb + NopeCHA 语音优先版)
+- 强制设置 NopeCHA 插件为语音打码模式 (audio)
+- 自动点击 reCAPTCHA 复选框及弹窗中的耳机图标 (Audio Challenge)
 - 自动确认续期并发送 Telegram 截图与报错通知
 """
 
@@ -77,7 +77,7 @@ def send_tg_photo(photo_path, caption=""):
 
 
 # ====================================================================
-# Patch NopeCHA 扩展
+# Patch NopeCHA 扩展 (强转为 Audio 语音打码模式)
 # ====================================================================
 def patch_nopecha(nopecha_path, api_key):
     if not api_key:
@@ -100,9 +100,16 @@ def patch_nopecha(nopecha_path, api_key):
             log("NopeCHA 插件已注入过 Key，跳过")
             return True
 
+        # 设置 recaptcha_solve_method 为 audio 模式
         inject = f"""// NopeCHA-Inject
 (function(){{
-    const s={{enabled:true,key:"{api_key}",auto_solve_hcaptcha:true,auto_solve_recaptcha:true}};
+    const s={{
+        enabled: true,
+        key: "{api_key}",
+        auto_solve_hcaptcha: true,
+        auto_solve_recaptcha: true,
+        recaptcha_solve_method: "audio"
+    }};
     function applySettings(){{
         if (typeof chrome !== 'undefined' && chrome.storage) {{
             if (chrome.storage.local) chrome.storage.local.set({{settings:s, key:"{api_key}"}});
@@ -116,7 +123,7 @@ def patch_nopecha(nopecha_path, api_key):
         with open(bg, "w", encoding="utf-8") as f:
             f.write(inject + content)
 
-        log("✅ NopeCHA API Key 成功注入插件！")
+        log("✅ NopeCHA API Key 成功注入插件（已开启语音打码模式）！")
         return True
     except Exception as e:
         log(f"Patch 失败: {e}", "ERROR")
@@ -148,7 +155,6 @@ def renew_vps():
                 f"--load-extension={EXT_PATH}",
             ])
 
-        # 安全清洗并处理代理格式（剥离末尾的 # 节点备注）
         proxy_config = None
         if PROXY_URL:
             clean_proxy = PROXY_URL.split("#")[0].strip()
@@ -160,7 +166,7 @@ def renew_vps():
 
         browser = p.chromium.launch_persistent_context(
             user_data_dir="/tmp/playwright-data",
-            headless=False,  # Xvfb 虚拟屏幕模式运行
+            headless=False,
             proxy=proxy_config,
             args=launch_args,
             viewport={"width": 1280, "height": 800},
@@ -180,38 +186,31 @@ def renew_vps():
             page.fill("input[name='password']", PASSWORD)
             log("已填写账号密码")
 
-            # 主动点击 reCAPTCHA 复选框（使用 force=True 穿透遮罩 + JS 兜底）
+            # 1. 点击勾选框
             log("主动点击触发 reCAPTCHA 验证框...")
             try:
                 recaptcha_frame = page.frame_locator('iframe[title*="reCAPTCHA"]')
                 checkbox = recaptcha_frame.locator('.recaptcha-checkbox-border')
-                # 强行点击穿透遮罩，超时缩短为 5 秒
                 checkbox.click(force=True, timeout=5000)
-                log("成功强行点击验证码复选框 👆")
+                log("成功点击验证码复选框 👆")
             except Exception as e:
-                log(f"强制点击触发异常，尝试通过 JS 触发表单内唤醒: {e}", "WARN")
-                try:
-                    page.evaluate("""() => {
-                        const iframes = Array.from(document.querySelectorAll('iframe'));
-                        for (const frame of iframes) {
-                            if (frame.title && frame.title.includes('reCAPTCHA')) {
-                                const doc = frame.contentDocument || frame.contentWindow.document;
-                                const cb = doc.querySelector('.recaptcha-checkbox-border') || doc.querySelector('#recaptcha-anchor');
-                                if (cb) {
-                                    cb.click();
-                                    return true;
-                                }
-                            }
-                        }
-                        return false;
-                    }""")
-                    log("已尝试通过 JS 强行唤醒验证码复选框 ⚡")
-                except Exception as js_err:
-                    log(f"JS 唤醒提示: {js_err}", "WARN")
+                log(f"勾选框触发提示: {e}", "WARN")
 
-            log("等待 NopeCHA 扩展破解验证码（最多等待 60 秒）...")
+            time.sleep(2)
+
+            # 2. 如果弹出了图片九宫格，主动去点一下“耳机 🎧”图标切换到语音模式
+            try:
+                challenge_frame = page.frame_locator('iframe[src*="bframe"]')
+                audio_btn = challenge_frame.locator('#recaptcha-audio-button')
+                if audio_btn.is_visible(timeout=3000):
+                    audio_btn.click(force=True)
+                    log("已主动点击‘耳机🎧’图标切换为语音验证码！")
+            except:
+                pass
+
+            log("等待 NopeCHA 扩展破解验证码（最多等待 90 秒）...")
             solved = False
-            for i in range(60):
+            for i in range(90):
                 solved = page.evaluate("""() => {
                     const ta = document.getElementById('g-recaptcha-response');
                     return ta && ta.value && ta.value.length > 0;
