@@ -18,26 +18,27 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: 安装系统依赖与下载 Buster 语音打码插件
+      - name: 安装系统工具
         run: |
           sudo apt-get update
           sudo apt-get install -y p7zip-full wget xvfb curl
-          mkdir -p scripts/extensions/buster
-          
-          # 自动获取 Buster 最新版 zip 链接，避免硬编码 404
-          BUSTER_URL=$(curl -s https://api.github.com/repos/eoiner/buster/releases/latest | grep "browser_download_url.*zip" | cut -d : -f 2,3 | tr -d \")
-          if [ -z "$BUSTER_URL" ]; then
-            BUSTER_URL="https://github.com/eoiner/buster/releases/download/v2.0.1/buster-2.0.1-chrome.zip"
-          fi
-          
-          echo "下载地址: $BUSTER_URL"
-          wget -q -O /tmp/buster.zip "$BUSTER_URL" || true
-          
-          if [ -f /tmp/buster.zip ]; then
-            7z x -y /tmp/buster.zip -oscripts/extensions/buster/unpacked
-            echo "Buster 插件下载并解压完成"
+
+      - name: 下载 Buster 语音打码插件 (使用官方 Release Action)
+        uses: robinraju/release-downloader@v1.8
+        with:
+          repository: "eoiner/buster"
+          latest: true
+          fileName: "*chrome.zip"
+          outFilePath: "/tmp"
+
+      - name: 解压 Buster 插件
+        run: |
+          mkdir -p scripts/extensions/buster/unpacked
+          if [ -f /tmp/*chrome.zip ]; then
+            7z x -y /tmp/*chrome.zip -oscripts/extensions/buster/unpacked
+            echo "✅ Buster 插件解压成功"
           else
-            echo "Buster 下载失败，跳过插件加载"
+            echo "⚠️ 未找到 Buster zip 文件"
           fi
 
       - name: 安装 Python 依赖与 Playwright 环境
