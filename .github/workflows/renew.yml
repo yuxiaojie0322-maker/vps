@@ -18,15 +18,15 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: 安装系统工具与下载解压 CapSolver 扩展
+      - name: 安装系统工具与下载解压 NopeCHA 扩展
         run: |
           sudo apt-get update
           sudo apt-get install -y p7zip-full wget
-          mkdir -p scripts/extensions/capsolver
-          wget -q -O /tmp/capsolver.zip \
-            https://github.com/capsolver/capsolver-browser-extension/releases/download/v1.14.0/capsolver-chrome-v1.14.0.zip
-          7z x -y /tmp/capsolver.zip -oscripts/extensions/capsolver/unpacked
-          echo "CapSolver 扩展已下载"
+          mkdir -p scripts/extensions/nopecha
+          wget -q -O /tmp/nopecha.zip \
+            https://github.com/NopeCHALLC/nopecha-extension/releases/download/0.6.1/chromium.zip
+          7z x -y /tmp/nopecha.zip -oscripts/extensions/nopecha/unpacked
+          echo "NopeCHA 扩展已下载"
 
       - name: 安装 Python 依赖与 Playwright 完整系统环境
         run: |
@@ -38,7 +38,7 @@ jobs:
         env:
           VPS_EMAIL: ${{ secrets.VPS_EMAIL }}
           VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
-          CAPSOLVER_KEY: ${{ secrets.CAPSOLVER_KEY }}
+          NOPECHA_KEY: ${{ secrets.NOPECHA_KEY }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: |
