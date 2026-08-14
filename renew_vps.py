@@ -2,6 +2,7 @@
 VPSFree.es 自动续期脚本 (Xvfb + NopeCHA 图像打码版)
 - 设置 NopeCHA 插件为图像打码模式 (image)
 - 自动识别并等待 NopeCHA 处理验证码
+- 加入安全的强制触发机制，防止插件未自动点击复选框
 - 自动确认续期并发送 Telegram 截图与报错通知
 """
 
@@ -180,11 +181,26 @@ def renew_vps():
         try:
             log("打开登录页...")
             page.goto(f"{MANAGER_URL}/login", wait_until="networkidle", timeout=30000)
-            time.sleep(2)
+            
+            # 增加等待时间，确保 NopeCHA 插件完全加载并在页面注入 JS
+            time.sleep(4)
 
             page.fill("input[name='username']", EMAIL)
             page.fill("input[name='password']", PASSWORD)
-            log("已填写账号密码，等待 NopeCHA 自动处理验证码...")
+            
+            # 重新加入更加健壮的点击逻辑
+            # 防止部分情况下 NopeCHA 的 auto_solve 没能自动点开复选框导致死等
+            log("尝试主动触发 reCAPTCHA 验证框...")
+            try:
+                page.wait_for_selector('iframe[title*="reCAPTCHA"]', state='attached', timeout=10000)
+                recaptcha_frame = page.frame_locator('iframe[title*="reCAPTCHA"]')
+                checkbox = recaptcha_frame.locator('.recaptcha-checkbox-border')
+                # 确保元素可见后再点击，避免报错
+                checkbox.wait_for(state='visible', timeout=5000)
+                checkbox.click(force=True, timeout=5000)
+                log("成功主动点击验证码复选框 👆")
+            except Exception as e:
+                log(f"勾选框主动点击失败，可能插件已接管或无需点击: {e}", "WARN")
 
             log("等待 NopeCHA 扩展破解图像验证码（最多等待 120 秒）...")
             solved = False
