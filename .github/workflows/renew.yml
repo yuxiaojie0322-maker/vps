@@ -1,9 +1,9 @@
 name: VPSFree 自动续期
 
 on:
-  workflow_dispatch: # 支持在 GitHub Actions 页面手动点击按钮测试
+  workflow_dispatch: # 支持手动点击运行测试
   schedule:
-    # 每天 UTC 00:00 和 12:00 (北京时间 08:00 和 20:00) 各自动执行一次，精准捕捉 24 小时续期窗口
+    # 每天 UTC 00:00 和 12:00 (北京时间 08:00 和 20:00) 各执行一次，精准捕捉 24 小时续期窗口
     - cron: '0 0,12 * * *'
 
 jobs:
@@ -34,7 +34,7 @@ jobs:
           unzip -q -o nopecha.zip -d scripts/extensions/nopecha/unpacked
           echo "插件准备就绪！"
 
-      - name: 启动后台 Hysteria2 代理 (sing-box)
+      - name: 启动后台 TUIC 代理 (sing-box)
         run: |
           echo "下载 sing-box 客户端..."
           curl -Lo sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.9.0/sing-box-1.9.0-linux-amd64.tar.gz
@@ -42,7 +42,7 @@ jobs:
           mv sing-box-*-linux-amd64/sing-box ./sing-box
           chmod +x ./sing-box
 
-          echo "生成 Hysteria2 节点配置文件..."
+          echo "生成 TUIC 节点配置文件..."
           cat << 'EOF' > config.json
           {
             "inbounds": [
@@ -55,16 +55,21 @@ jobs:
             ],
             "outbounds": [
               {
-                "type": "hysteria2",
-                "tag": "hy2-out",
-                "server": "fi2.elysiannodes.uk",
-                "server_port": 2009,
-                "password": "35da4b28-3250-451d-a626-097ebd695933",
+                "type": "tuic",
+                "tag": "tuic-out",
+                "server": "35.212.241.85",
+                "server_port": 39168,
+                "uuid": "4c6d0929-9845-4d4e-b467-eba64b19b7d4",
+                "password": "4c6d0929-9845-4d4e-b467-eba64b19b7d4",
+                "congestion_control": "bbr",
+                "udp_relay_mode": "native",
                 "tls": {
                   "enabled": true,
                   "server_name": "www.bing.com",
                   "insecure": true,
-                  "alpn": ["h3"]
+                  "alpn": [
+                    "h3"
+                  ]
                 }
               }
             ]
