@@ -1,8 +1,5 @@
 """
-VPSFree.es 自动续期脚本 (NopeCHA 官方标准激活版)
-- 采用 nopecha.com/setup 官方标准协议激活插件
-- 全自动等待并识别 reCAPTCHA 九宫格验证码
-- 自动确认续期并发送 Telegram 截图通知
+VPSFree.es 自动续期脚本 (动态多轮打码 + 凭证防清空优化版)
 """
 
 import os
@@ -12,8 +9,8 @@ import requests
 from datetime import datetime
 
 # ========== 配置 ==========
-EMAIL = os.environ.get("VPS_EMAIL", "")
-PASSWORD = os.environ.get("VPS_PASSWORD", "")
+EMAIL = os.environ.get("VPS_EMAIL", "").strip()
+PASSWORD = os.environ.get("VPS_PASSWORD", "").strip()
 NOPECHA_KEY = os.environ.get("NOPECHA_KEY", "").strip()
 PROXY_URL = os.environ.get("PROXY_URL", "").strip()
 MANAGER_URL = "https://manager.vpsfree.es"
@@ -30,9 +27,6 @@ def log(msg, level="INFO"):
     print(f"[{t}] [{level}] {msg}")
 
 
-# ====================================================================
-# Telegram 推送
-# ====================================================================
 def send_tg_text(text):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         log("未配置 TG 推送，跳过", "WARN")
@@ -76,9 +70,6 @@ def send_tg_photo(photo_path, caption=""):
         return send_tg_text(caption)
 
 
-# ====================================================================
-# 主流程
-# ====================================================================
 def renew_vps():
     try:
         from playwright.sync_api import sync_playwright
@@ -87,8 +78,6 @@ def renew_vps():
         return False
 
     ext_ok = os.path.exists(EXT_PATH) and os.path.exists(os.path.join(EXT_PATH, "manifest.json"))
-    if not ext_ok:
-        log(f"⚠️ 未找到插件目录: {EXT_PATH}", "WARN")
 
     with sync_playwright() as p:
         launch_args = [
@@ -124,13 +113,12 @@ def renew_vps():
 
         page = browser.pages[0] if browser.pages else browser.new_page()
 
-        # 伪装抹除 webdriver
         page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
         """)
 
         try:
-            # 1. 官方标准激活 NopeCHA Key
+            # 1. 激活授权 NopeCHA
             if ext_ok and NOPECHA_KEY:
                 log("正在激活并授权 NopeCHA 插件...")
                 try:
@@ -140,29 +128,28 @@ def renew_vps():
                 except Exception as e:
                     log(f"NopeCHA 激活页面访问异常: {e}", "WARN")
 
-            # 2. 打开 VPSFree 登录页
+            # 2. 打开登录页
             log("打开 VPSFree 登录页...")
             page.goto(f"{MANAGER_URL}/login", wait_until="domcontentloaded", timeout=30000)
             time.sleep(3)
 
             # 3. 输入账号密码
             log("填写登录凭证...")
-            page.locator("input[name='username'], #inputEmail").first.fill(EMAIL)
-            page.locator("input[name='password'], #inputPassword").first.fill(PASSWORD)
+            user_input = page.locator("input[name='username'], #inputEmail").first
+            pass_input = page.locator("input[name='password'], #inputPassword").first
+            user_input.fill(EMAIL)
+            pass_input.fill(PASSWORD)
             time.sleep(1)
 
-            # 4. 等待 NopeCHA 自动识别验证码（NopeCHA 会自动点开并自动消灭九宫格图片）
-            log("等待 NopeCHA 自动破解 reCAPTCHA 验证码（最长等待 120 秒）...")
+            # 4. 等待 NopeCHA 自动识别验证码（放宽至 180 秒支持多轮动态图片）
+            log("等待 NopeCHA 自动破解 reCAPTCHA 验证码（最长等待 180 秒）...")
             solved = False
-            for i in range(120):
-                # 检查验证码是否通过
+            for i in range(180):
                 solved = page.evaluate("""() => {
-                    // 1. 检查 token
                     const tas = document.querySelectorAll('textarea[name="g-recaptcha-response"], #g-recaptcha-response');
                     for (const ta of tas) {
                         if (ta.value && ta.value.trim().length > 20) return true;
                     }
-                    // 2. 检查勾选标记
                     const iframes = document.querySelectorAll('iframe[title*="reCAPTCHA"]');
                     for (const f of iframes) {
                         try {
@@ -175,28 +162,39 @@ def renew_vps():
                 if solved:
                     log(f"🎉 验证码成功破解！耗时 {i + 1} 秒 ✅")
                     break
+                
+                # 每 30 秒打印一次进度
+                if (i + 1) % 30 == 0:
+                    log(f"⏳ 正在持续破解多轮验证码中... 已等待 {i + 1} 秒")
                 time.sleep(1)
 
             if not solved:
-                log("⚠️ 验证码识别超时，保存截图准备强制点击提交...", "WARN")
+                log("⚠️ 验证码识别超时，保存截图准备强行提交...", "WARN")
                 page.screenshot(path="login_failed.png")
 
-            time.sleep(2)
+            time.sleep(3)
 
-            # 5. 点击登录按钮
+            # 5. 防清空：在提交前，重新确保账号密码被正确填充
+            log("复核并确保表单账号密码完整...")
+            if not user_input.input_value():
+                user_input.fill(EMAIL)
+            if not pass_input.input_value():
+                pass_input.fill(PASSWORD)
+            time.sleep(1)
+
+            # 6. 提交登录表单
             log("提交登录表单...")
             submit_btn = page.locator("button#login, button[type='submit'], input[type='submit']").first
             
             try:
-                # 尝试普通点击或强制点击
                 submit_btn.click(force=True, timeout=10000)
             except Exception as e:
-                log(f"点击登录按钮异常，尝试键盘回车: {e}", "WARN")
+                log(f"点击登录按钮异常，使用键盘回车提交: {e}", "WARN")
                 page.keyboard.press("Enter")
 
-            time.sleep(5)
+            time.sleep(6)
 
-            # 6. 验证是否登录成功
+            # 7. 验证是否登录成功
             if "login" in page.url.lower():
                 log(f"登录失败，仍在登录页: {page.url}", "ERROR")
                 page.screenshot(path="login_failed.png")
