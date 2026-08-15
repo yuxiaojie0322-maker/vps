@@ -1,9 +1,9 @@
 name: VPSFree 自动续期
 
 on:
-  workflow_dispatch: # 支持手动点击运行测试
+  workflow_dispatch: # 支持在 GitHub Actions 页面手动点击按钮测试
   schedule:
-    # 每天 UTC 00:00 和 12:00 (北京时间 08:00 和 20:00) 各执行一次，精准捕捉 24 小时续期窗口
+    # 每天 UTC 00:00 和 12:00 (北京时间 08:00 和 20:00) 各自动执行一次，精准捕捉 24 小时续期窗口
     - cron: '0 0,12 * * *'
 
 jobs:
@@ -25,19 +25,24 @@ jobs:
           playwright install chromium
           playwright install-deps
 
-      - name: 自动准备 NopeCHA 验证码插件
+      - name: 自动下载并解压 NopeCHA 验证码插件
         run: |
+          echo "创建插件目录..."
           mkdir -p scripts/extensions/nopecha/unpacked
+          echo "从官方源下载最新 NopeCHA 插件..."
           curl -fLo nopecha.zip https://github.com/NopeCHALLC/nopecha-extension/releases/latest/download/chromium.zip
           unzip -q -o nopecha.zip -d scripts/extensions/nopecha/unpacked
+          echo "插件准备就绪！"
 
       - name: 启动后台 Hysteria2 代理 (sing-box)
         run: |
+          echo "下载 sing-box 客户端..."
           curl -Lo sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.9.0/sing-box-1.9.0-linux-amd64.tar.gz
           tar -xzf sing-box.tar.gz
           mv sing-box-*-linux-amd64/sing-box ./sing-box
           chmod +x ./sing-box
 
+          echo "生成 Hysteria2 节点配置文件..."
           cat << 'EOF' > config.json
           {
             "inbounds": [
@@ -66,17 +71,19 @@ jobs:
           }
           EOF
 
+          echo "启动后台代理服务..."
           ./sing-box run -c config.json &
           sleep 4
-          curl -x http://127.0.0.1:7890 https://api.ipify.org || echo "代理就绪"
+          curl -x http://127.0.0.1:7890 https://api.ipify.org || echo "代理网络就绪"
 
-      - name: 运行续期脚本 (Xvfb 虚拟屏幕环境)
+      - name: 运行批量续期脚本 (Xvfb 虚拟屏幕环境)
         env:
-          VPS_EMAIL: ${{ secrets.VPS_EMAIL }}
-          VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
-          NOPECHA_KEY: ${{ secrets.NOPECHA_KEY }}
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          PROXY_URL: "http://127.0.0.1:7890"
+          VPS_ACCOUNTS: ${{ secrets.VPS_ACCOUNTS }} # 支持多账号 (一行一个: 邮箱----密码)
+          VPS_EMAIL: ${{ secrets.VPS_EMAIL }}       # 兼容单账号
+          VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }} # 兼容单账号
+          NOPECHA_KEY: ${{ secrets.NOPECHA_KEY }}   # NopeCHA 打码 API Key
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }} # Telegram 推送 Token
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}     # Telegram Chat ID
+          PROXY_URL: "http://127.0.0.1:7890"        # 本地 sing-box 代理端口
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1440x900x24" python renew_vps.py
