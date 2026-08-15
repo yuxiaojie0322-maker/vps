@@ -1,10 +1,8 @@
 """
-VPSFree.es 自动续期脚本 (防检测增强 + NopeCHA 修复版)
-- 增加了浏览器指纹伪装，去除 navigator.webdriver 特征
-- 修复 reCAPTCHA 完成状态的多重检测（name 属性与 iframe 勾选状态）
-- 优化 NopeCHA 插件 Key 注入兼容性
-- 采用真实事件模拟点击登录按钮（避免 WHMCS CSRF/Token 丢失）
-- 增加关键阶段截图与错误日志
+VPSFree.es 自动续期脚本 (NopeCHA 官方标准激活版)
+- 采用 nopecha.com/setup 官方标准协议激活插件
+- 全自动等待并识别 reCAPTCHA 九宫格验证码
+- 自动确认续期并发送 Telegram 截图通知
 """
 
 import os
@@ -79,79 +77,6 @@ def send_tg_photo(photo_path, caption=""):
 
 
 # ====================================================================
-# Patch NopeCHA 扩展 (增强版多入口匹配)
-# ====================================================================
-def patch_nopecha(nopecha_path, api_key):
-    if not api_key:
-        log("未设置 NOPECHA_KEY，使用试用模式", "WARN")
-        return False
-
-    # 遍历可能存在的入口文件
-    possible_files = [
-        os.path.join(nopecha_path, "assets", "qrmm9f.js"),
-        os.path.join(nopecha_path, "background.js"),
-        os.path.join(nopecha_path, "service_worker.js"),
-        os.path.join(nopecha_path, "dist", "background.js"),
-    ]
-
-    target_file = None
-    for f in possible_files:
-        if os.path.exists(f):
-            target_file = f
-            break
-
-    # 如果都没找到，搜索根目录下所有 js
-    if not target_file:
-        for root, _, files in os.walk(nopecha_path):
-            for file in files:
-                if file.endswith(".js") and ("bg" in file or "background" in file or "service" in file):
-                    target_file = os.path.join(root, file)
-                    break
-            if target_file:
-                break
-
-    if not target_file:
-        log(f"未找到 NopeCHA 入口 JS 文件，跳过注入", "WARN")
-        return False
-
-    try:
-        with open(target_file, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        if "// NopeCHA-Inject" in content:
-            log("NopeCHA 插件已注入过 Key，跳过")
-            return True
-
-        inject = f"""// NopeCHA-Inject
-(function(){{
-    const s={{
-        enabled: true,
-        key: "{api_key}",
-        auto_solve_hcaptcha: true,
-        auto_solve_recaptcha: true,
-        recaptcha_solve_method: "image"
-    }};
-    function applySettings(){{
-        if (typeof chrome !== 'undefined' && chrome.storage) {{
-            if (chrome.storage.local) chrome.storage.local.set({{settings:s, key:"{api_key}"}});
-            if (chrome.storage.sync) chrome.storage.sync.set({{settings:s, key:"{api_key}"}});
-        }}
-    }}
-    applySettings();
-    setTimeout(applySettings, 1000);
-    setTimeout(applySettings, 3000);
-}})();\n"""
-        with open(target_file, "w", encoding="utf-8") as f:
-            f.write(inject + content)
-
-        log(f"✅ NopeCHA API Key 成功注入插件文件: {os.path.basename(target_file)}")
-        return True
-    except Exception as e:
-        log(f"Patch 失败: {e}", "ERROR")
-        return False
-
-
-# ====================================================================
 # 主流程
 # ====================================================================
 def renew_vps():
@@ -162,18 +87,14 @@ def renew_vps():
         return False
 
     ext_ok = os.path.exists(EXT_PATH) and os.path.exists(os.path.join(EXT_PATH, "manifest.json"))
-    if ext_ok and NOPECHA_KEY:
-        patch_nopecha(EXT_PATH, NOPECHA_KEY)
+    if not ext_ok:
+        log(f"⚠️ 未找到插件目录: {EXT_PATH}", "WARN")
 
     with sync_playwright() as p:
-        # 防检测启动参数
         launch_args = [
             "--no-sandbox",
             "--disable-dev-shm-usage",
-            "--disable-blink-features=AutomationControlled",  # 关键：移除自动化受控标志
-            "--disable-infobars",
-            "--no-first-run",
-            "--disable-background-networking",
+            "--disable-blink-features=AutomationControlled",
         ]
         if ext_ok:
             launch_args.extend([
@@ -185,18 +106,15 @@ def renew_vps():
         if PROXY_URL:
             clean_proxy = PROXY_URL.split("#")[0].strip()
             if clean_proxy.startswith(("http://", "https://", "socks5://", "socks4://")):
-                log(f"🌐 正在通过代理建立连接: {clean_proxy.split('@')[-1]}")
+                log(f"🌐 正在通过代理建立连接: {clean_proxy}")
                 proxy_config = {"server": clean_proxy}
-            else:
-                log("⚠️ PROXY_URL 格式非标准，降级为直连网络", "WARN")
 
-        # 启动持久化上下文
         browser = p.chromium.launch_persistent_context(
             user_data_dir="/tmp/playwright-data",
             headless=False,
             proxy=proxy_config,
             args=launch_args,
-            ignore_default_args=["--enable-automation"],  # 关键：移除自动化提示栏
+            ignore_default_args=["--enable-automation"],
             viewport={"width": 1280, "height": 800},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             locale="en-US",
@@ -206,107 +124,89 @@ def renew_vps():
 
         page = browser.pages[0] if browser.pages else browser.new_page()
 
-        # 注入 Stealth 伪装脚本，彻底抹除 webdriver 痕迹
+        # 伪装抹除 webdriver
         page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            });
-            window.chrome = {
-                runtime: {},
-                loadTimes: function() {},
-                csi: function() {},
-                app: {}
-            };
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
         """)
 
         try:
-            log("打开登录页...")
+            # 1. 官方标准激活 NopeCHA Key
+            if ext_ok and NOPECHA_KEY:
+                log("正在激活并授权 NopeCHA 插件...")
+                try:
+                    page.goto(f"https://nopecha.com/setup#{NOPECHA_KEY}", wait_until="domcontentloaded", timeout=15000)
+                    time.sleep(3)
+                    log("✅ NopeCHA 插件授权激活成功")
+                except Exception as e:
+                    log(f"NopeCHA 激活页面访问异常: {e}", "WARN")
+
+            # 2. 打开 VPSFree 登录页
+            log("打开 VPSFree 登录页...")
             page.goto(f"{MANAGER_URL}/login", wait_until="domcontentloaded", timeout=30000)
             time.sleep(3)
 
-            # 填充用户名和密码
-            log("输入登录凭证...")
+            # 3. 输入账号密码
+            log("填写登录凭证...")
             page.locator("input[name='username'], #inputEmail").first.fill(EMAIL)
             page.locator("input[name='password'], #inputPassword").first.fill(PASSWORD)
+            time.sleep(1)
 
-            # 等待 reCAPTCHA 渲染
-            log("检查验证码状态...")
-            time.sleep(2)
-
-            # 仅在复选框未勾选时轻柔触发一次
-            try:
-                recaptcha_frame = page.frame_locator('iframe[title*="reCAPTCHA"], iframe[src*="recaptcha"]').first
-                checkbox = recaptcha_frame.locator('#recaptcha-anchor, .recaptcha-checkbox').first
-                if checkbox.is_visible():
-                    aria_checked = checkbox.get_attribute("aria-checked")
-                    if aria_checked != "true":
-                        log("点击验证码勾选框以触发识别...")
-                        checkbox.click()
-            except Exception as e:
-                log(f"未主动点击验证码框（插件可能已自动接管）: {e}", "DEBUG")
-
-            log("等待 NopeCHA 插件识别验证码（最长 90 秒）...")
+            # 4. 等待 NopeCHA 自动识别验证码（NopeCHA 会自动点开并自动消灭九宫格图片）
+            log("等待 NopeCHA 自动破解 reCAPTCHA 验证码（最长等待 120 秒）...")
             solved = False
-            for i in range(90):
-                # 增强的多重检测：检查 name/id/value 以及 iframe 的 aria-checked 属性
+            for i in range(120):
+                # 检查验证码是否通过
                 solved = page.evaluate("""() => {
-                    // 1. 检查页面上任意 reCAPTCHA response textarea
-                    const textareas = document.querySelectorAll('textarea[name="g-recaptcha-response"], #g-recaptcha-response');
-                    for (const ta of textareas) {
-                        if (ta.value && ta.value.trim().length > 10) return true;
+                    // 1. 检查 token
+                    const tas = document.querySelectorAll('textarea[name="g-recaptcha-response"], #g-recaptcha-response');
+                    for (const ta of tas) {
+                        if (ta.value && ta.value.trim().length > 20) return true;
                     }
-                    // 2. 检查 iframe 勾选框是否已被勾选 (checked)
+                    // 2. 检查勾选标记
                     const iframes = document.querySelectorAll('iframe[title*="reCAPTCHA"]');
                     for (const f of iframes) {
                         try {
-                            const anchor = f.contentDocument?.querySelector('.recaptcha-checkbox-checked, [aria-checked="true"]');
-                            if (anchor) return true;
+                            if (f.contentDocument?.querySelector('.recaptcha-checkbox-checked, [aria-checked="true"]')) return true;
                         } catch(e) {}
                     }
                     return false;
                 }""")
 
                 if solved:
-                    log(f"🎉 验证码成功通过！耗时 {i + 1} 秒 ✅")
+                    log(f"🎉 验证码成功破解！耗时 {i + 1} 秒 ✅")
                     break
                 time.sleep(1)
 
             if not solved:
-                log("⚠️ 验证码未能在限定时间内完成识别，截图并尝试点击提交...", "WARN")
-                page.screenshot(path="captcha_timeout.png")
+                log("⚠️ 验证码识别超时，保存截图准备强制点击提交...", "WARN")
+                page.screenshot(path="login_failed.png")
 
             time.sleep(2)
 
-            # 模拟真实点击提交按钮（触发 Lagom/WHMCS 表单事件）
-            log("正在点击登录按钮...")
+            # 5. 点击登录按钮
+            log("提交登录表单...")
             submit_btn = page.locator("button#login, button[type='submit'], input[type='submit']").first
             
-            with page.expect_navigation(timeout=15000, wait_until="domcontentloaded"):
-                submit_btn.click()
+            try:
+                # 尝试普通点击或强制点击
+                submit_btn.click(force=True, timeout=10000)
+            except Exception as e:
+                log(f"点击登录按钮异常，尝试键盘回车: {e}", "WARN")
+                page.keyboard.press("Enter")
 
-            time.sleep(4)
+            time.sleep(5)
 
-            # 检查是否成功登录
-            current_url = page.url.lower()
-            if "login" in current_url:
-                # 尝试检查页面上的错误提示
-                error_msg = ""
-                try:
-                    alert = page.locator(".alert-danger, .alert-error, .login-error").first
-                    if alert.is_visible():
-                        error_msg = alert.inner_text().strip()
-                except:
-                    pass
-
-                log(f"登录失败，仍停留在登录页面。页面提示: {error_msg}", "ERROR")
+            # 6. 验证是否登录成功
+            if "login" in page.url.lower():
+                log(f"登录失败，仍在登录页: {page.url}", "ERROR")
                 page.screenshot(path="login_failed.png")
                 return False
 
-            log(f"登录成功 ✅，当前跳转页面: {page.url}")
+            log(f"登录成功 ✅，当前进入后台页面: {page.url}")
             return do_renew(page)
 
         except Exception as e:
-            log(f"运行流程异常: {e}", "ERROR")
+            log(f"流程执行异常: {e}", "ERROR")
             try:
                 page.screenshot(path="renew_error.png")
             except:
@@ -328,7 +228,7 @@ def do_renew(page):
             manage_btn.click()
             log("点击 Manage 成功 ✅")
         else:
-            log("未发现 Manage 按钮，尝试查找产品条目", "WARN")
+            log("未发现 Manage 按钮", "WARN")
             page.screenshot(path="no_manage_btn.png")
             return False
     except Exception as e:
@@ -345,7 +245,7 @@ def do_renew(page):
             renew_btn.click()
             log("点击续期按钮成功 ✅")
         else:
-            log("未找到续期按钮（可能已处于最新续期状态或未到期）", "WARN")
+            log("未找到续期按钮（可能已续期或未到期）", "WARN")
             page.screenshot(path="no_renew_btn.png")
             return True
     except Exception as e:
@@ -410,7 +310,7 @@ def main():
             f"⏰ 时间: {now}\n"
             f"💡 请查看附件截图排查"
         )
-        for shot in ["login_failed.png", "captcha_timeout.png", "renew_error.png", "no_manage_btn.png"]:
+        for shot in ["login_failed.png", "renew_error.png", "no_manage_btn.png"]:
             if os.path.exists(shot):
                 send_tg_photo(shot, caption)
                 break
