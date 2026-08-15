@@ -1,5 +1,5 @@
 """
-VPSFree.es 自动续期脚本 (动态多轮打码 + 凭证防清空优化版)
+VPSFree.es 免费面板自动续期脚本 (适配 free.vpsfree.es + hCaptcha)
 """
 
 import os
@@ -13,7 +13,7 @@ EMAIL = os.environ.get("VPS_EMAIL", "").strip()
 PASSWORD = os.environ.get("VPS_PASSWORD", "").strip()
 NOPECHA_KEY = os.environ.get("NOPECHA_KEY", "").strip()
 PROXY_URL = os.environ.get("PROXY_URL", "").strip()
-MANAGER_URL = "https://manager.vpsfree.es"
+BASE_URL = "https://free.vpsfree.es"
 EXT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "scripts", "extensions", "nopecha", "unpacked")
 
@@ -106,7 +106,7 @@ def renew_vps():
             ignore_default_args=["--enable-automation"],
             viewport={"width": 1280, "height": 800},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            locale="en-US",
+            locale="zh-CN",
             bypass_csp=True,
             ignore_https_errors=True,
         )
@@ -128,79 +128,75 @@ def renew_vps():
                 except Exception as e:
                     log(f"NopeCHA 激活页面访问异常: {e}", "WARN")
 
-            # 2. 打开登录页
-            log("打开 VPSFree 登录页...")
-            page.goto(f"{MANAGER_URL}/login", wait_until="domcontentloaded", timeout=30000)
-            time.sleep(3)
+            # 2. 打开 free.vpsfree.es 登录页
+            log(f"打开登录页: {BASE_URL}/connexion ...")
+            page.goto(f"{BASE_URL}/connexion", wait_until="domcontentloaded", timeout=30000)
+            time.sleep(4)
 
-            # 3. 输入账号密码
+            # 3. 填写账号密码
             log("填写登录凭证...")
-            user_input = page.locator("input[name='username'], #inputEmail").first
-            pass_input = page.locator("input[name='password'], #inputPassword").first
-            user_input.fill(EMAIL)
+            email_input = page.locator("input[type='email'], input[name='email'], input[name='username']").first
+            pass_input = page.locator("input[type='password'], input[name='password']").first
+            
+            email_input.fill(EMAIL)
             pass_input.fill(PASSWORD)
             time.sleep(1)
 
-            # 4. 等待 NopeCHA 自动识别验证码（放宽至 180 秒支持多轮动态图片）
-            log("等待 NopeCHA 自动破解 reCAPTCHA 验证码（最长等待 180 秒）...")
+            # 4. 等待 NopeCHA 识别 hCaptcha 验证码
+            log("等待 NopeCHA 自动识别 hCaptcha 验证码...")
             solved = False
-            for i in range(180):
+            for i in range(90):
                 solved = page.evaluate("""() => {
-                    const tas = document.querySelectorAll('textarea[name="g-recaptcha-response"], #g-recaptcha-response');
+                    // 1. 检查 hCaptcha response token
+                    const tas = document.querySelectorAll('textarea[name="h-captcha-response"], textarea[name="g-recaptcha-response"]');
                     for (const ta of tas) {
                         if (ta.value && ta.value.trim().length > 20) return true;
                     }
-                    const iframes = document.querySelectorAll('iframe[title*="reCAPTCHA"]');
+                    // 2. 检查勾选状态
+                    const iframes = document.querySelectorAll('iframe[src*="hcaptcha"], iframe[title*="hcaptcha"]');
                     for (const f of iframes) {
                         try {
-                            if (f.contentDocument?.querySelector('.recaptcha-checkbox-checked, [aria-checked="true"]')) return true;
+                            if (f.contentDocument?.querySelector('[aria-checked="true"], .check')) return true;
                         } catch(e) {}
                     }
                     return false;
                 }""")
 
                 if solved:
-                    log(f"🎉 验证码成功破解！耗时 {i + 1} 秒 ✅")
+                    log(f"🎉 hCaptcha 验证码破解成功！耗时 {i + 1} 秒 ✅")
                     break
-                
-                # 每 30 秒打印一次进度
-                if (i + 1) % 30 == 0:
-                    log(f"⏳ 正在持续破解多轮验证码中... 已等待 {i + 1} 秒")
                 time.sleep(1)
 
             if not solved:
-                log("⚠️ 验证码识别超时，保存截图准备强行提交...", "WARN")
-                page.screenshot(path="login_failed.png")
+                log("⚠️ 验证码等待超时，准备强行提交...", "WARN")
 
-            time.sleep(3)
+            time.sleep(2)
 
-            # 5. 防清空：在提交前，重新确保账号密码被正确填充
-            log("复核并确保表单账号密码完整...")
-            if not user_input.input_value():
-                user_input.fill(EMAIL)
+            # 5. 确保凭据填写正确并点击 Sign In
+            log("点击 Sign In 按钮提交登录...")
+            if not email_input.input_value():
+                email_input.fill(EMAIL)
             if not pass_input.input_value():
                 pass_input.fill(PASSWORD)
-            time.sleep(1)
 
-            # 6. 提交登录表单
-            log("提交登录表单...")
-            submit_btn = page.locator("button#login, button[type='submit'], input[type='submit']").first
-            
+            submit_btn = page.locator("button:has-text('Sign In'), button[type='submit']").first
             try:
                 submit_btn.click(force=True, timeout=10000)
             except Exception as e:
-                log(f"点击登录按钮异常，使用键盘回车提交: {e}", "WARN")
+                log(f"点击异常，使用回车键提交: {e}", "WARN")
                 page.keyboard.press("Enter")
 
             time.sleep(6)
 
-            # 7. 验证是否登录成功
-            if "login" in page.url.lower():
-                log(f"登录失败，仍在登录页: {page.url}", "ERROR")
+            # 6. 检查是否成功登录
+            current_url = page.url.lower()
+            if "connexion" in current_url or "login" in current_url:
+                log(f"登录未成功，仍在登录页: {page.url}", "ERROR")
                 page.screenshot(path="login_failed.png")
                 return False
 
-            log(f"登录成功 ✅，当前进入后台页面: {page.url}")
+            log(f"🎉 登录成功！当前控制台网址: {page.url} ✅")
+            page.screenshot(path="dashboard.png")
             return do_renew(page)
 
         except Exception as e:
@@ -215,60 +211,46 @@ def renew_vps():
 
 
 def do_renew(page):
-    log("访问服务列表...")
-    page.goto(f"{MANAGER_URL}/clientarea.php?action=products", wait_until="domcontentloaded", timeout=30000)
+    log("进入控制台，查找服务器与续期按钮...")
     time.sleep(3)
 
-    log("查找 Manage 按钮...")
+    # 尝试查找各种可能的管理与续期按钮
+    renewed = False
     try:
-        manage_btn = page.locator("text=Manage, a:has-text('Manage')").first
+        # 1. 查找 Manage / 管理 按钮
+        manage_btn = page.locator("a:has-text('Manage'), button:has-text('Manage'), a:has-text('管理')").first
         if manage_btn.is_visible():
             manage_btn.click()
             log("点击 Manage 成功 ✅")
-        else:
-            log("未发现 Manage 按钮", "WARN")
-            page.screenshot(path="no_manage_btn.png")
-            return False
-    except Exception as e:
-        log(f"点击 Manage 失败: {e}", "ERROR")
-        page.screenshot(path="no_manage_btn.png")
-        return False
+            time.sleep(3)
 
-    time.sleep(3)
-
-    log("查找续期按钮...")
-    try:
-        renew_btn = page.locator("text=Renew For 7 days, text=Renew").first
+        # 2. 查找 Renew / 续期 按钮
+        renew_btn = page.locator("a:has-text('Renew'), button:has-text('Renew'), a:has-text('续期'), button:has-text('续期'), text=Renew").first
         if renew_btn.is_visible():
             renew_btn.click()
             log("点击续期按钮成功 ✅")
+            renewed = True
+            time.sleep(3)
+
+            # 3. 确认弹窗
+            confirm_btn = page.locator("button:has-text('Confirm'), button:has-text('确定'), button:has-text('Yes')").first
+            if confirm_btn.is_visible():
+                confirm_btn.click()
+                log("确认续期成功 ✅")
+                time.sleep(2)
         else:
-            log("未找到续期按钮（可能已续期或未到期）", "WARN")
-            page.screenshot(path="no_renew_btn.png")
-            return True
+            log("未发现明显的 Renew 按钮（可能未到期或当前状态良好）", "WARN")
+            renewed = True
     except Exception as e:
-        log(f"点击续期按钮异常: {e}", "ERROR")
-        page.screenshot(path="no_renew_btn.png")
-        return False
+        log(f"续期交互异常: {e}", "WARN")
 
-    time.sleep(3)
-    try:
-        confirm_btn = page.locator("button:has-text('Confirm'), a:has-text('Confirm'), text=Confirm").first
-        if confirm_btn.is_visible():
-            confirm_btn.click()
-            log("确认续期成功 ✅")
-            time.sleep(2)
-    except:
-        pass
-
-    log("🎉 续期完成！")
     page.screenshot(path="renew_success.png")
-    return True
+    return renewed
 
 
 def main():
     log("=" * 40)
-    log("VPSFree 自动续期运行开始")
+    log("VPSFree.es 自动续期运行开始")
     log("=" * 40)
 
     if not EMAIL or not PASSWORD:
@@ -283,32 +265,28 @@ def main():
     if success:
         log("续期流程完成，正在发送 TG 成功通知...")
         caption = (
-            f"✅ <b>VPSFree 自动续期成功</b>\n"
+            f"✅ <b>VPSFree.es 自动续期运行成功</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"📧 账号: {EMAIL}\n"
             f"⏰ 时间: {now}\n"
-            f"🔁 下次续期: 7天后\n"
             f"━━━━━━━━━━━━━━━━\n"
-            f"🖼 页面截图如下"
+            f"🖼 控制台截图如下"
         )
         shot_path = "renew_success.png"
         if not os.path.exists(shot_path):
-            for p in ["no_renew_btn.png", "no_manage_btn.png"]:
-                if os.path.exists(p):
-                    shot_path = p
-                    break
+            shot_path = "dashboard.png"
 
         send_tg_photo(shot_path, caption)
     else:
         log("续期流程失败，正在发送 TG 失败通知...", "ERROR")
         caption = (
-            f"❌ <b>VPSFree 续期失败</b>\n"
+            f"❌ <b>VPSFree.es 登录/续期失败</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"📧 账号: {EMAIL}\n"
             f"⏰ 时间: {now}\n"
             f"💡 请查看附件截图排查"
         )
-        for shot in ["login_failed.png", "renew_error.png", "no_manage_btn.png"]:
+        for shot in ["login_failed.png", "renew_error.png", "dashboard.png"]:
             if os.path.exists(shot):
                 send_tg_photo(shot, caption)
                 break
