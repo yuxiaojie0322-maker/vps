@@ -1,55 +1,58 @@
-# VPSFree.es 自动续期脚本
+# 🚀 VPSFree.es 自动续期脚本 (GitHub Actions 增强版)
 
-使用 Playwright 浏览器自动化，定时登录 [manager.vpsfree.es](https://manager.vpsfree.es) 自动续期 VPS。
+基于 **GitHub Actions + Playwright + NopeCHA + Sing-box (Hysteria2)** 的全自动 [VPSFree.es](https://free.vpsfree.es) 免费 VPS 续期与巡检工具。
 
-## 📦 文件说明
+无需自己准备服务器或电脑开机，每日定时云端巡检、自动打码、精准捕捉 24 小时续期窗口，并将实例运行仪表盘与到期倒计时推送至 Telegram！
 
-| 文件 | 用途 |
-|:---|:---|
-| `renew_vps.py` | 续期主脚本（Playwright 自动化） |
-| `.github/workflows/renew.yml` | GitHub Actions 定时任务配置 |
+---
 
-## 🚀 部署步骤
+## ✨ 核心特性
 
-### 1. 创建 GitHub 仓库
-- 新建一个 **私有仓库**（Private），避免暴露账号信息
+- 🌐 **内置 Hysteria2 代理网络**：自动启动 `sing-box` 客户端，完美绕过微软 GitHub 云端机房 IP 拦截风控。
+- 🤖 **NopeCHA 验证码自动破解**：无缝通过 `free.vpsfree.es` 的 **hCaptcha** 人机验证。
+- ⚡ **精准捕捉 24 小时续期窗口**：根据官方规则（*仅在到期前最后 24 小时开放续期按钮*），设置每 12 小时（早晚各一次）自动巡检，确保绝不漏续、绝不删机。
+- 👥 **支持单账号 / 多账号批量轮询**：一个 Secret 即可配置多个账号，每个账号独立隔离会话运行。
+- 📸 **Telegram 仪表盘高清图文推送**：自动进入 `Instance Management` 详情页截取高分辨率完整界面，并格式化推送 CPU/内存占用、运行时间与到期倒计时。
 
-### 2. 上传文件
-```
-你的仓库/
-├── renew_vps.py
-└── .github/workflows/renew.yml
-```
+---
 
-### 3. 配置 Secrets（安全存敏感信息）
-仓库 → Settings → Secrets and variables → Actions → New repository secret
+## 🛠️ 配置教程
 
-| Secret 名称 | 值 |
-|:---|:---|
-| `VPS_EMAIL` | 你的登录邮箱（如 `yuxiaojie0322@gmail.com`） |
-| `VPS_PASSWORD` | 你的登录密码 |
-| `CAPTCHA_KEY` | 2captcha API Key（见下方说明） |
+### 第一步：创建 GitHub Secrets 环境变量
 
-### 4. 获取 2captcha API Key（解决验证码）
-该网站有 reCAPTCHA 验证码，需要 2captcha 自动识别：
+进入你的 GitHub 仓库 ➔ **Settings** ➔ **Secrets and variables** ➔ **Actions** ➔ 点击 **New repository secret**，添加以下变量：
 
-1. 去 [2captcha.com](https://2captcha.com) 注册账号
-2. 充值（约 $3 可识别 1000 次，够用很久）
-3. 在仪表盘复制 API Key
-4. 添加到 GitHub Secrets 的 `CAPTCHA_KEY`
+| Secret 变量名 | 是否必填 | 说明 | 示例值 |
+| :--- | :--- | :--- | :--- |
+| `VPS_ACCOUNTS` | **推荐** | **多账号配置**（一行一个，使用 `----` 分隔邮箱与密码） | 见下方多账号示例 |
+| `VPS_EMAIL` | 可选 | 单账号模式邮箱（若未填 `VPS_ACCOUNTS` 则使用此项） | `example@gmail.com` |
+| `VPS_PASSWORD` | 可选 | 单账号模式密码 | `YourPassword123` |
+| `NOPECHA_KEY` | **必填** | [NopeCHA](https://nopecha.com) 官方 API Key（用于自动打码） | `k_1234567890abcdef` |
+| `TG_BOT_TOKEN` | 可选 | Telegram Bot Token（用于消息推送） | `123456789:ABCdef...` |
+| `TG_CHAT_ID` | 可选 | Telegram 接收通知的用户/群组 Chat ID | `987654321` |
 
-### 5. 测试运行
-- 仓库 → Actions → 找到 `VPSFree 自动续期` → 点 `Run workflow` 手动触发一次
-- 观察日志，确认续期成功
+> 💡 **`VPS_ACCOUNTS` 多账号填写示例（支持任意添加多个，回车换行即可）：**
+> ```text
+> myemail1@gmail.com----Password123@
+> myemail2@outlook.com----Password456@
+> ```
 
-## ⏰ 定时规则
-默认 **每7天凌晨2点** 运行一次（`0 2 */7 * *`）
-想改频率就编辑 `renew.yml` 里的 `cron` 表达式
+---
 
-## 🔧 如果续期失败
-- 会自动截取页面截图，保存为 Artifact 供你查看
-- 会自动创建 Issue 提醒你手动续期
+### 第二步：手动触发测试
 
-## ⚠️ 注意
-- 2captcha 需要付费（约 $3 起），但比手动续期省事多了
-- 如果不想用付费服务，也可以在自己电脑上手动运行脚本（有头模式），手动点验证码
+1. 点击仓库顶部的 **Actions** 标签页。
+2. 在左侧选择 **VPSFree 自动续期** 工作流。
+3. 点击右侧的 **Run workflow** ➔ 再次点击绿色的 **Run workflow** 按钮。
+4. 查看运行日志，并在 Telegram 中查收完整的实例仪表盘截图与运行报告！
+
+---
+
+## ⏰ 定时任务说明
+
+工作流默认配置为 **每天 UTC 00:00 和 12:00（北京时间 08:00 和 20:00）各自动运行一次**：
+
+```yaml
+schedule:
+  - cron: '0 0,12 * * *'
+
