@@ -1,5 +1,10 @@
 """
-VPSFree.es 免费面板自动续期脚本 (精准截图 + 极简图文推送版)
+VPSFree.es 免费面板自动续期脚本 (深度适配 Instance Management 详情页)
+- 登录 free.vpsfree.es (hCaptcha)
+- 进入项目 Manage -> 点击 Manage VPS 进入实例详情
+- 抓取 CPU/内存/磁盘占用、运行天数、到期时间、续期倒计时
+- 自动检测并点击 "Renew for 7 days" 进行续期
+- 发送全信息 Telegram 仪表盘截图与报告
 """
 
 import os
@@ -43,7 +48,7 @@ def send_tg_photo(photo_path, caption=""):
             resp = requests.post(url, files=files, data=data, timeout=30)
         res_json = resp.json()
         if res_json.get("ok"):
-            log("TG 截图消息已成功发送 ✅")
+            log("TG 仪表盘截图已成功发送 ✅")
             return True
         else:
             log(f"TG 图片发送失败: {res_json}，改发纯文本...", "WARN")
@@ -104,7 +109,7 @@ def renew_vps():
             proxy=proxy_config,
             args=launch_args,
             ignore_default_args=["--enable-automation"],
-            viewport={"width": 1400, "height": 900},
+            viewport={"width": 1440, "height": 900},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             locale="zh-CN",
             bypass_csp=True,
@@ -165,7 +170,7 @@ def renew_vps():
 
             time.sleep(2)
 
-            # 5. 点击 Sign In 登录
+            # 5. 点击 Sign In
             log("点击 Sign In 按钮提交登录...")
             if not email_input.input_value():
                 email_input.fill(EMAIL)
@@ -188,7 +193,7 @@ def renew_vps():
 
             log(f"🎉 登录成功！进入控制台主页: {page.url} ✅")
             time.sleep(3)
-            return do_manage_and_renew(page)
+            return do_instance_manage_and_renew(page)
 
         except Exception as e:
             log(f"流程执行异常: {e}", "ERROR")
@@ -201,83 +206,119 @@ def renew_vps():
             browser.close()
 
 
-def do_manage_and_renew(page):
-    log("正在定位项目卡片中的 Manage 按钮...")
-
-    # 1. 点击项目 Manage 进入服务管理详情
+def do_instance_manage_and_renew(page):
+    # 步骤 1: 点击项目列表中的 Manage 按钮
+    log("正在进入项目服务列表...")
     try:
         manage_btn = page.locator("a:has-text('Manage'), button:has-text('Manage')").first
         if manage_btn.is_visible():
             manage_btn.click()
-            log("已点击 Manage 按钮，进入服务管理详情页... 👆")
             time.sleep(4)
     except Exception as e:
-        log(f"点击 Manage 异常: {e}", "WARN")
+        log(f"点击项目 Manage 异常: {e}", "WARN")
 
+    # 步骤 2: 点击列表右侧的 "Manage VPS" 按钮进入实例详情页
+    log("正在点击 'Manage VPS' 进入实例详情页...")
+    try:
+        manage_vps_btn = page.locator("a:has-text('Manage VPS'), button:has-text('Manage VPS')").first
+        if manage_vps_btn.is_visible():
+            manage_vps_btn.click()
+            log("成功点击 Manage VPS 按钮 👆")
+            time.sleep(4)
+        else:
+            log("未在当前页找到 Manage VPS 按钮，尝试查找链接", "WARN")
+    except Exception as e:
+        log(f"点击 Manage VPS 异常: {e}", "WARN")
+
+    log(f"当前所在详情页网址: {page.url}")
     time.sleep(2)
+
+    # 步骤 3: 从详情页提取关键运行状态数据
     body_text = page.locator("body").inner_text()
 
-    # 2. 精准提取红框里的两行关键状态
+    # 1. 到期时间
     expires_str = "未获取到"
     m_exp = re.search(r"Expires:\s*([^\n\r]+)", body_text)
     if m_exp:
         expires_str = m_exp.group(1).strip()
 
-    renewal_str = "未获取到"
-    m_ren = re.search(r"Renewal opens in\s*([^\n\r]+)", body_text)
-    if m_ren:
-        renewal_str = f"Renewal opens in {m_ren.group(1).strip()}"
-    elif "Renew 7 days" in body_text:
-        renewal_str = "已开放续期"
+    # 2. 开放续期倒计时
+    renewal_countdown = "已开放"
+    m_open = re.search(r"Renewal opens in\s*([^\n\r]+)", body_text)
+    if m_open:
+        renewal_countdown = f"Renewal opens in {m_open.group(1).strip()}"
 
-    log(f"📋 提取状态 -> 到期时间: {expires_str} | 续期状态: {renewal_str}")
+    # 3. 运行时间
+    uptime_str = "正常运行中"
+    m_uptime = re.search(r"(Running since[^\n\r]+|Uptime[^\n\r]+)", body_text)
+    if m_uptime:
+        uptime_str = m_uptime.group(1).strip()
 
-    # 3. 尝试点击 "Renew 7 days" 按钮
-    action_result = "⏸ 暂未开放续期"
+    # 4. 资源占用率
+    cpu_str, mem_str, disk_str = "0.0%", "0.0%", "0.0%"
+    m_cpu = re.search(r"([\d.]+%)\s*CPU", body_text, re.I)
+    if m_cpu: cpu_str = m_cpu.group(1)
+    m_mem = re.search(r"([\d.]+%)\s*MEMORY", body_text, re.I)
+    if m_mem: mem_str = m_mem.group(1)
+    m_disk = re.search(r"([\d.]+%)\s*DISK", body_text, re.I)
+    if m_disk: disk_str = m_disk.group(1)
+
+    log(f"📋 状态汇总: 到期={expires_str} | 倒计时={renewal_countdown} | 资源={cpu_str}/{mem_str}/{disk_str}")
+
+    # 步骤 4: 尝试点击 "Renew for 7 days" 按钮进行续期
+    action_result = "⏸ 暂未开放（仅到期前24小时内可点）"
     try:
-        renew_btn = page.get_by_text("Renew 7 days", exact=False).first
+        renew_btn = page.locator("button:has-text('Renew for 7 days'), a:has-text('Renew for 7 days'), button:has-text('Renew')").first
+        
+        # 判断按钮是否可见且未被禁用 (disabled)
         if renew_btn.is_visible():
-            log("找到 'Renew 7 days' 按钮，正在执行点击... 👆")
-            renew_btn.click()
-            time.sleep(3)
+            is_disabled = renew_btn.get_attribute("disabled") is not None
+            if not is_disabled and "opens in" not in renewal_countdown:
+                log("🎯 发现可用续期按钮，正在点击续期... 👆")
+                renew_btn.click()
+                time.sleep(3)
 
-            # 确认弹窗
-            try:
-                confirm_btn = page.locator("button:has-text('Confirm'), button:has-text('确定'), button:has-text('Yes')").first
-                if confirm_btn.is_visible():
-                    confirm_btn.click()
-                    time.sleep(2)
-            except:
-                pass
+                # 检查确认弹窗
+                try:
+                    confirm_btn = page.locator("button:has-text('Confirm'), button:has-text('确定'), button:has-text('Yes')").first
+                    if confirm_btn.is_visible():
+                        confirm_btn.click()
+                        time.sleep(2)
+                except:
+                    pass
 
-            action_result = "✅ 成功点击 Renew 7 days 续期！"
-            log("续期点击操作完成 ✅")
+                action_result = "🎉 <b>成功完成 7 天续期！</b>"
+                log("续期操作完成 ✅")
+            else:
+                log(f"续期按钮当前锁定中（{renewal_countdown}）", "INFO")
         else:
-            log("当前未到续期开放时间（按钮不可用或未开放）", "INFO")
+            log("未找到可用的续期按钮", "INFO")
     except Exception as e:
         log(f"续期点击处理异常: {e}", "WARN")
-        action_result = f"续期点击异常: {e}"
 
     time.sleep(2)
-    # 保存服务管理详情截图
-    final_shot = "renew_detail.png"
-    page.screenshot(path=final_shot)
+    # 保存实例管理页面截图
+    instance_shot = "instance_dashboard.png"
+    page.screenshot(path=instance_shot)
 
-    # 4. 构建干净漂亮的 Telegram 图文推送
+    # 步骤 5: 构建 Telegram 仪表盘通知
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     caption = (
-        f"✅ <b>VPSFree.es 自动续期运行报告</b>\n"
+        f"🖥 <b>VPSFree.es 实例运行与续期报告</b>\n"
         f"━━━━━━━━━━━━━━━━\n"
         f"📧 <b>账号:</b> <code>{EMAIL}</code>\n"
+        f"📊 <b>资源:</b> CPU: {cpu_str} | 内存: {mem_str} | 硬盘: {disk_str}\n"
+        f"⏱ <b>运行:</b> {uptime_str}\n"
+        f"━━━━━━━━━━━━━━━━\n"
         f"⏳ <b>到期时间:</b> <code>{expires_str}</code>\n"
-        f"🔄 <b>续期状态:</b> <code>{renewal_str}</code>\n"
+        f"🔄 <b>续期状态:</b> <code>{renewal_countdown}</code>\n"
         f"⚡ <b>执行结果:</b> {action_result}\n"
         f"⏰ <b>检测时间:</b> {now_str}\n"
         f"━━━━━━━━━━━━━━━━\n"
-        f"🖼 <i>服务管理截图如下</i>"
+        f"💡 <i>规则：仅在到期前最后24小时内开放续期按钮</i>"
     )
 
-    send_tg_photo(final_shot, caption)
+    send_tg_photo(instance_shot, caption)
     return True
 
 
@@ -301,7 +342,7 @@ def main():
             f"━━━━━━━━━━━━━━━━\n"
             f"📧 账号: <code>{EMAIL}</code>\n"
             f"⏰ 时间: {now_str}\n"
-            f"💡 请查看截图排查"
+            f"💡 请检查附件截图排查"
         )
         for shot in ["login_failed.png", "renew_error.png"]:
             if os.path.exists(shot):
