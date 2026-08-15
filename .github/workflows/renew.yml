@@ -3,7 +3,7 @@ name: VPSFree 自动续期
 on:
   workflow_dispatch: # 支持手动点击运行测试
   schedule:
-    # 每 5 天的 UTC 02:00 (北京时间 10:00) 自动执行一次
+    # 每 5 天自动执行一次
     - cron: '0 2 */5 * *'
 
 jobs:
@@ -19,21 +19,28 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: 安装 Python 依赖与 Playwright 浏览器
+      - name: 安装 Python 依赖与 Playwright
         run: |
           pip install playwright requests
           playwright install chromium
           playwright install-deps
 
+      - name: 自动准备 NopeCHA 验证码插件
+        run: |
+          echo "创建插件目录并下载 NopeCHA..."
+          mkdir -p scripts/extensions/nopecha/unpacked
+          curl -Lo nopecha.zip https://github.com/NopeCHA/NopeCHA/releases/download/v0.4.7/nopecha-0.4.7-chromium.zip
+          unzip -q -o nopecha.zip -d scripts/extensions/nopecha/unpacked
+
       - name: 启动后台 Hysteria2 代理 (sing-box)
         run: |
-          echo "正在下载 sing-box 客户端..."
+          echo "下载 sing-box 客户端..."
           curl -Lo sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.9.0/sing-box-1.9.0-linux-amd64.tar.gz
           tar -xzf sing-box.tar.gz
           mv sing-box-*-linux-amd64/sing-box ./sing-box
           chmod +x ./sing-box
 
-          echo "生成 sing-box 节点配置文件..."
+          echo "生成节点配置文件..."
           cat << 'EOF' > config.json
           {
             "inbounds": [
@@ -62,12 +69,10 @@ jobs:
           }
           EOF
 
-          echo "启动后台代理服务..."
+          echo "启动后台代理..."
           ./sing-box run -c config.json &
           sleep 4
-
-          echo "测试代理连通性..."
-          curl -x http://127.0.0.1:7890 https://api.ipify.org || echo "代理测试完成"
+          curl -x http://127.0.0.1:7890 https://api.ipify.org || echo "代理就绪"
 
       - name: 运行续期脚本 (Xvfb 虚拟屏幕环境)
         env:
@@ -76,9 +81,9 @@ jobs:
           NOPECHA_KEY: ${{ secrets.NOPECHA_KEY }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          PROXY_URL: "http://127.0.0.1:7890" # 直接指向上面 sing-box 开启的本地代理
+          PROXY_URL: "http://127.0.0.1:7890"
         run: |
-          xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" python renew.py
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" python renew_vps.py
 
       - name: 上传排查截图 (如果失败或需要查看)
         if: always()
