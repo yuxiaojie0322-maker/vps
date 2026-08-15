@@ -1,51 +1,89 @@
 name: VPSFree 自动续期
 
 on:
+  workflow_dispatch: # 支持手动点击运行测试
   schedule:
-    - cron: "0 2 */7 * *"   # 每7天凌晨2点执行
-  workflow_dispatch:        # 支持手动触发执行
+    # 每 5 天的 UTC 02:00 (北京时间 10:00) 自动执行一次
+    - cron: '0 2 */5 * *'
 
 jobs:
   renew:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 检出代码
+      - name: 检出仓库代码
         uses: actions/checkout@v4
 
-      - name: 安装 Python
+      - name: 设置 Python 环境
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.10'
 
-      - name: 安装系统工具与下载 NopeCHA 插件
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y p7zip-full wget xvfb curl
-          mkdir -p scripts/extensions/nopecha
-          
-          # 下载并解压 NopeCHA 扩展
-          wget -q -L -O /tmp/nopecha.zip \
-            https://github.com/NopeCHALLC/nopecha-extension/releases/download/0.6.1/chromium.zip || true
-          
-          if [ -f /tmp/nopecha.zip ]; then
-            7z x -y /tmp/nopecha.zip -oscripts/extensions/nopecha/unpacked
-            echo "✅ NopeCHA 插件下载完成"
-          fi
-
-      - name: 安装 Python 依赖与 Playwright 环境
+      - name: 安装 Python 依赖与 Playwright 浏览器
         run: |
           pip install playwright requests
-          sudo $(which playwright) install-deps chromium
           playwright install chromium
+          playwright install-deps
 
-      - name: 执行续期 (Virtual Screen 模式)
+      - name: 启动后台 Hysteria2 代理 (sing-box)
+        run: |
+          echo "正在下载 sing-box 客户端..."
+          curl -Lo sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.9.0/sing-box-1.9.0-linux-amd64.tar.gz
+          tar -xzf sing-box.tar.gz
+          mv sing-box-*-linux-amd64/sing-box ./sing-box
+          chmod +x ./sing-box
+
+          echo "生成 sing-box 节点配置文件..."
+          cat << 'EOF' > config.json
+          {
+            "inbounds": [
+              {
+                "type": "mixed",
+                "tag": "mixed-in",
+                "listen": "127.0.0.1",
+                "listen_port": 7890
+              }
+            ],
+            "outbounds": [
+              {
+                "type": "hysteria2",
+                "tag": "hy2-out",
+                "server": "fi2.elysiannodes.uk",
+                "server_port": 2009,
+                "password": "35da4b28-3250-451d-a626-097ebd695933",
+                "tls": {
+                  "enabled": true,
+                  "server_name": "www.bing.com",
+                  "insecure": true,
+                  "alpn": ["h3"]
+                }
+              }
+            ]
+          }
+          EOF
+
+          echo "启动后台代理服务..."
+          ./sing-box run -c config.json &
+          sleep 4
+
+          echo "测试代理连通性..."
+          curl -x http://127.0.0.1:7890 https://api.ipify.org || echo "代理测试完成"
+
+      - name: 运行续期脚本 (Xvfb 虚拟屏幕环境)
         env:
           VPS_EMAIL: ${{ secrets.VPS_EMAIL }}
           VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
           NOPECHA_KEY: ${{ secrets.NOPECHA_KEY }}
-          PROXY_URL: ${{ secrets.PROXY_URL }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          PROXY_URL: "http://127.0.0.1:7890" # 直接指向上面 sing-box 开启的本地代理
         run: |
-          xvfb-run python renew_vps.py
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" python renew.py
+
+      - name: 上传排查截图 (如果失败或需要查看)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: execution-screenshots
+          path: "*.png"
+          retention-days: 3
