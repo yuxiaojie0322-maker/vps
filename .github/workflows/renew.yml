@@ -27,10 +27,12 @@ jobs:
 
       - name: 自动准备 NopeCHA 验证码插件
         run: |
-          echo "创建插件目录并下载 NopeCHA..."
+          echo "创建插件目录并从官方源下载 NopeCHA..."
           mkdir -p scripts/extensions/nopecha/unpacked
-          curl -Lo nopecha.zip https://github.com/NopeCHA/NopeCHA/releases/download/v0.4.7/nopecha-0.4.7-chromium.zip
+          curl -fLo nopecha.zip https://github.com/NopeCHALLC/nopecha-extension/releases/latest/download/chromium.zip
           unzip -q -o nopecha.zip -d scripts/extensions/nopecha/unpacked
+          echo "插件解压完成，检查文件清单："
+          ls -la scripts/extensions/nopecha/unpacked
 
       - name: 启动后台 Hysteria2 代理 (sing-box)
         run: |
