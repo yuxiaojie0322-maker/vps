@@ -31,8 +31,6 @@ jobs:
           mkdir -p scripts/extensions/nopecha/unpacked
           curl -fLo nopecha.zip https://github.com/NopeCHALLC/nopecha-extension/releases/latest/download/chromium.zip
           unzip -q -o nopecha.zip -d scripts/extensions/nopecha/unpacked
-          echo "插件解压完成，检查文件清单："
-          ls -la scripts/extensions/nopecha/unpacked
 
       - name: 启动后台 Hysteria2 代理 (sing-box)
         run: |
@@ -86,11 +84,3 @@ jobs:
           PROXY_URL: "http://127.0.0.1:7890"
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" python renew_vps.py
-
-      - name: 上传排查截图 (如果失败或需要查看)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: execution-screenshots
-          path: "*.png"
-          retention-days: 3
