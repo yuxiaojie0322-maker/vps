@@ -1,5 +1,10 @@
 """
-VPSFree.es 免费面板自动续期脚本 (适配 free.vpsfree.es + hCaptcha)
+VPSFree.es 免费面板自动续期脚本 (精准适配 Manage 详情与 Renew 7 days)
+- 登录 free.vpsfree.es (hCaptcha)
+- 点击项目卡片 Manage 进入详情
+- 抓取 Renewal 红框信息（到期时间与开放倒计时）
+- 自动点击 "Renew 7 days" 续期按钮
+- 发送 Telegram 详情图文推送
 """
 
 import os
@@ -27,24 +32,6 @@ def log(msg, level="INFO"):
     print(f"[{t}] [{level}] {msg}")
 
 
-def send_tg_text(text):
-    if not TG_BOT_TOKEN or not TG_CHAT_ID:
-        log("未配置 TG 推送，跳过", "WARN")
-        return False
-    try:
-        url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
-        resp = requests.post(url, json={
-            "chat_id": TG_CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True
-        }, timeout=15)
-        return resp.json().get("ok", False)
-    except Exception as e:
-        log(f"TG 发送异常: {e}", "ERROR")
-        return False
-
-
 def send_tg_photo(photo_path, caption=""):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         log("未配置 TG 推送，跳过", "WARN")
@@ -60,7 +47,7 @@ def send_tg_photo(photo_path, caption=""):
             resp = requests.post(url, files=files, data=data, timeout=30)
         res_json = resp.json()
         if res_json.get("ok"):
-            log("TG 图片消息已成功发送 ✅")
+            log("TG 图文消息已成功发送 ✅")
             return True
         else:
             log(f"TG 图片发送失败: {res_json}，改发纯文本...", "WARN")
@@ -68,6 +55,23 @@ def send_tg_photo(photo_path, caption=""):
     except Exception as e:
         log(f"TG 发送异常: {e}", "ERROR")
         return send_tg_text(caption)
+
+
+def send_tg_text(text):
+    if not TG_BOT_TOKEN or not TG_CHAT_ID:
+        return False
+    try:
+        url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+        resp = requests.post(url, json={
+            "chat_id": TG_CHAT_ID,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }, timeout=15)
+        return resp.json().get("ok", False)
+    except Exception as e:
+        log(f"TG 纯文本发送异常: {e}", "ERROR")
+        return False
 
 
 def renew_vps():
@@ -104,7 +108,7 @@ def renew_vps():
             proxy=proxy_config,
             args=launch_args,
             ignore_default_args=["--enable-automation"],
-            viewport={"width": 1280, "height": 800},
+            viewport={"width": 1400, "height": 900},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             locale="zh-CN",
             bypass_csp=True,
@@ -142,17 +146,15 @@ def renew_vps():
             pass_input.fill(PASSWORD)
             time.sleep(1)
 
-            # 4. 等待 NopeCHA 识别 hCaptcha 验证码
+            # 4. 等待 NopeCHA 自动识别 hCaptcha 验证码
             log("等待 NopeCHA 自动识别 hCaptcha 验证码...")
             solved = False
-            for i in range(90):
+            for i in range(120):
                 solved = page.evaluate("""() => {
-                    // 1. 检查 hCaptcha response token
                     const tas = document.querySelectorAll('textarea[name="h-captcha-response"], textarea[name="g-recaptcha-response"]');
                     for (const ta of tas) {
                         if (ta.value && ta.value.trim().length > 20) return true;
                     }
-                    // 2. 检查勾选状态
                     const iframes = document.querySelectorAll('iframe[src*="hcaptcha"], iframe[title*="hcaptcha"]');
                     for (const f of iframes) {
                         try {
@@ -167,12 +169,9 @@ def renew_vps():
                     break
                 time.sleep(1)
 
-            if not solved:
-                log("⚠️ 验证码等待超时，准备强行提交...", "WARN")
-
             time.sleep(2)
 
-            # 5. 确保凭据填写正确并点击 Sign In
+            # 5. 点击 Sign In
             log("点击 Sign In 按钮提交登录...")
             if not email_input.input_value():
                 email_input.fill(EMAIL)
@@ -183,7 +182,6 @@ def renew_vps():
             try:
                 submit_btn.click(force=True, timeout=10000)
             except Exception as e:
-                log(f"点击异常，使用回车键提交: {e}", "WARN")
                 page.keyboard.press("Enter")
 
             time.sleep(6)
@@ -195,9 +193,9 @@ def renew_vps():
                 page.screenshot(path="login_failed.png")
                 return False
 
-            log(f"🎉 登录成功！当前控制台网址: {page.url} ✅")
-            page.screenshot(path="dashboard.png")
-            return do_renew(page)
+            log(f"🎉 登录成功！进入控制台主页: {page.url} ✅")
+            time.sleep(3)
+            return do_manage_and_renew(page)
 
         except Exception as e:
             log(f"流程执行异常: {e}", "ERROR")
@@ -210,42 +208,126 @@ def renew_vps():
             browser.close()
 
 
-def do_renew(page):
-    log("进入控制台，查找服务器与续期按钮...")
-    time.sleep(3)
+def do_manage_and_renew(page):
+    log("正在定位项目卡片中的 Manage 按钮...")
+    page.screenshot(path="dashboard_projets.png")
 
-    # 尝试查找各种可能的管理与续期按钮
-    renewed = False
+    # 1. 查找并点击项目卡片上的 Manage 按钮
     try:
-        # 1. 查找 Manage / 管理 按钮
-        manage_btn = page.locator("a:has-text('Manage'), button:has-text('Manage'), a:has-text('管理')").first
+        manage_btn = page.locator("a:has-text('Manage'), button:has-text('Manage')").first
         if manage_btn.is_visible():
             manage_btn.click()
-            log("点击 Manage 成功 ✅")
-            time.sleep(3)
-
-        # 2. 查找 Renew / 续期 按钮
-        renew_btn = page.locator("a:has-text('Renew'), button:has-text('Renew'), a:has-text('续期'), button:has-text('续期'), text=Renew").first
-        if renew_btn.is_visible():
-            renew_btn.click()
-            log("点击续期按钮成功 ✅")
-            renewed = True
-            time.sleep(3)
-
-            # 3. 确认弹窗
-            confirm_btn = page.locator("button:has-text('Confirm'), button:has-text('确定'), button:has-text('Yes')").first
-            if confirm_btn.is_visible():
-                confirm_btn.click()
-                log("确认续期成功 ✅")
-                time.sleep(2)
+            log("成功点击项目 Manage 按钮，正在进入服务管理页... 👆")
+            time.sleep(5)
         else:
-            log("未发现明显的 Renew 按钮（可能未到期或当前状态良好）", "WARN")
-            renewed = True
+            log("未直接找到 Manage 按钮，尝试直接刷新当前页", "WARN")
     except Exception as e:
-        log(f"续期交互异常: {e}", "WARN")
+        log(f"点击项目 Manage 按钮异常: {e}", "WARN")
 
-    page.screenshot(path="renew_success.png")
-    return renewed
+    log(f"当前所在页面: {page.url}")
+    time.sleep(2)
+
+    # 2. 提取红框中的续期及到期信息 (Renewal 信息)
+    log("正在提取红框中的续期与到期状态...")
+    info_data = page.evaluate("""() => {
+        const result = {
+            renewal_text: "未抓取到到期信息",
+            details_text: "",
+            service_name: ""
+        };
+
+        // 查找包含 Expires 的单元格
+        const allCells = Array.from(document.querySelectorAll('td, div, p'));
+        for (const el of allCells) {
+            const txt = el.innerText || "";
+            if (txt.includes("Expires:") && (txt.includes("Renewal") || txt.includes("open"))) {
+                result.renewal_text = txt.trim();
+                break;
+            }
+        }
+
+        // 查找 IP 和系统详情
+        for (const el of allCells) {
+            const txt = el.innerText || "";
+            if (txt.includes("IPv4") || txt.includes("IPv6") || txt.includes("Debian") || txt.includes("Ubuntu")) {
+                result.details_text = txt.trim();
+                break;
+            }
+        }
+
+        // 查找服务名 (如 VPS#1003)
+        for (const el of allCells) {
+            const txt = el.innerText || "";
+            if (txt.includes("VPS#")) {
+                result.service_name = txt.trim();
+                break;
+            }
+        }
+
+        return result;
+    }""")
+
+    renewal_info = info_data.get("renewal_text", "无数据")
+    details_info = info_data.get("details_text", "")
+    service_name = info_data.get("service_name", "VPSFree 服务")
+
+    log(f"📋 抓取到的红框状态:\n{renewal_info}")
+
+    # 3. 查找并点击 "Renew 7 days" 按钮
+    renew_action_result = "未触发续期（可能未到开放时间）"
+    try:
+        renew_btn = page.locator("a:has-text('Renew 7 days'), button:has-text('Renew 7 days'), text=/Renew 7 days/i").first
+        if renew_btn.is_visible():
+            log("找到 'Renew 7 days' 按钮，正在执行点击... 👆")
+            renew_btn.click()
+            time.sleep(3)
+
+            # 检查是否有确认弹窗 (Confirm / Yes / 确定)
+            try:
+                confirm_btn = page.locator("button:has-text('Confirm'), button:has-text('确定'), button:has-text('Yes'), a:has-text('Confirm')").first
+                if confirm_btn.is_visible():
+                    confirm_btn.click()
+                    log("成功点击确认续期弹窗 ✅")
+                    time.sleep(2)
+            except:
+                pass
+
+            renew_action_result = "🎉 已成功点击 Renew 7 days 进行续期！"
+            log("续期操作完成 ✅")
+        else:
+            log("⚠️ 当前未找到可点击的 'Renew 7 days' 按钮（可能尚未进入开放续期窗口）", "WARN")
+            renew_action_result = "⏸ 暂未开放续期（请留意下方倒计时）"
+    except Exception as e:
+        log(f"点击续期按钮异常: {e}", "WARN")
+        renew_action_result = f"续期点击异常: {e}"
+
+    time.sleep(2)
+    # 保存最终的服务管理页截图
+    final_shot = "renew_detail_success.png"
+    page.screenshot(path=final_shot)
+
+    # 4. 构建并发送 Telegram 图文通知
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    caption = (
+        f"✅ <b>VPSFree.es 自动续期运行报告</b>\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"📧 <b>账号:</b> <code>{EMAIL}</code>\n"
+        f"🖥 <b>服务:</b> <code>{service_name}</code>\n"
+    )
+    if details_info:
+        caption += f"🌐 <b>节点详情:</b>\n<code>{details_info}</code>\n"
+
+    caption += (
+        f"━━━━━━━━━━━━━━━━\n"
+        f"⏳ <b>续期与到期状态（红框信息）:</b>\n"
+        f"<blockquote>{renewal_info}</blockquote>\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"⚡ <b>操作结果:</b> {renew_action_result}\n"
+        f"⏰ <b>检测时间:</b> {now_str}\n"
+    )
+
+    send_tg_photo(final_shot, caption)
+    return True
 
 
 def main():
@@ -258,41 +340,24 @@ def main():
         sys.exit(1)
 
     log(f"正在处理账号: {EMAIL}")
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
     success = renew_vps()
 
-    if success:
-        log("续期流程完成，正在发送 TG 成功通知...")
+    if not success:
+        log("运行失败，发送失败通知...", "ERROR")
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         caption = (
-            f"✅ <b>VPSFree.es 自动续期运行成功</b>\n"
+            f"❌ <b>VPSFree.es 续期脚本运行异常</b>\n"
             f"━━━━━━━━━━━━━━━━\n"
-            f"📧 账号: {EMAIL}\n"
-            f"⏰ 时间: {now}\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"🖼 控制台截图如下"
+            f"📧 账号: <code>{EMAIL}</code>\n"
+            f"⏰ 时间: {now_str}\n"
+            f"💡 请检查附件截图排查"
         )
-        shot_path = "renew_success.png"
-        if not os.path.exists(shot_path):
-            shot_path = "dashboard.png"
-
-        send_tg_photo(shot_path, caption)
-    else:
-        log("续期流程失败，正在发送 TG 失败通知...", "ERROR")
-        caption = (
-            f"❌ <b>VPSFree.es 登录/续期失败</b>\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"📧 账号: {EMAIL}\n"
-            f"⏰ 时间: {now}\n"
-            f"💡 请查看附件截图排查"
-        )
-        for shot in ["login_failed.png", "renew_error.png", "dashboard.png"]:
+        for shot in ["login_failed.png", "renew_error.png", "dashboard_projets.png"]:
             if os.path.exists(shot):
                 send_tg_photo(shot, caption)
                 break
         else:
             send_tg_text(caption)
-
         sys.exit(1)
 
 
