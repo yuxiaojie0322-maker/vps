@@ -6,6 +6,10 @@ on:
     # 每天 UTC 00:00 和 12:00 (北京时间 08:00 和 20:00) 各执行一次，精准捕捉 24 小时续期窗口
     - cron: '0 0,12 * * *'
 
+permissions:
+  actions: write
+  contents: read
+
 jobs:
   renew:
     runs-on: ubuntu-latest
@@ -92,3 +96,11 @@ jobs:
           PROXY_URL: "http://127.0.0.1:7890"        # 本地 sing-box 代理端口
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1440x900x24" python renew_vps.py
+
+      - name: 清理历史运行记录（仅保留最新1条）
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 0
+          keep_minimum_runs: 1
