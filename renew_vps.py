@@ -205,10 +205,28 @@ def process_single_account(p, email, password, acc_index, total_accs):
             time.sleep(2)
 
             # 5. 重新确认账号密码
+            try:
+                ev = email_input.input_value()
+                pv = pass_input.input_value()
+                log(f"[{email}] 调试: email_field={ev[:20] if ev else '空'}, pass_field={'有值' if pv else '空'}", "INFO")
+            except:
+                log(f"[{email}] 调试: 无法读取字段值", "WARN")
             if not email_input.input_value():
                 email_input.fill(email)
+                log(f"[{email}] 重新填入邮箱", "INFO")
             if not pass_input.input_value():
                 pass_input.fill(password)
+                log(f"[{email}] 重新填入密码", "INFO")
+
+            # 检查 captcha response
+            try:
+                cap_resp = page.evaluate("""() => {
+                    const t = document.querySelector('textarea[name="h-captcha-response"]');
+                    return t ? t.value.substring(0, 30) : 'no textarea';
+                }""")
+                log(f"[{email}] 调试: captcha_response={cap_resp}", "INFO")
+            except:
+                pass
 
             # 调试：打印页面按钮
             try:
@@ -252,6 +270,16 @@ def process_single_account(p, email, password, acc_index, total_accs):
                 pass_input.press("Enter")
 
             time.sleep(6)
+
+            # 调试：打印提交后的页面状态
+            try:
+                after_url = page.url
+                after_text = page.evaluate("() => document.body?.innerText?.substring(0, 500) || ''")
+                log(f"[{email}] 调试: 提交后URL={after_url[:60]}", "INFO")
+                log(f"[{email}] 调试: 提交后页面={after_text[:200]}", "INFO")
+                page.screenshot(path=f"after_submit_{attempt}.png")
+            except:
+                pass
 
             # 检查登录结果
             current_url = page.url.lower()
