@@ -131,7 +131,8 @@ def process_single_account(p, email, password, acc_index, total_accs):
 
     attempt = 0
     # ========== 循环重试直到登录并处理成功 ==========
-    while True:
+    for attempt in range(1, 6):  # 最多重试5次
+        log(f"[{email}] === 第 {attempt} 次尝试 ===")
         attempt += 1
         log(f"[{email}] 🔄 [第 {attempt} 次尝试] 正在启动独立会话...")
         browser = None
@@ -323,6 +324,9 @@ def process_single_account(p, email, password, acc_index, total_accs):
                 except Exception:
                     pass
 
+
+    log(f"[{email}] ❌ 5次尝试后仍失败，跳过此账号", "ERROR")
+    return False
 
 def main():
     log("=" * 40)
