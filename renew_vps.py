@@ -204,17 +204,52 @@ def process_single_account(p, email, password, acc_index, total_accs):
 
             time.sleep(2)
 
-            # 5. 提交登录
+            # 5. 重新确认账号密码
             if not email_input.input_value():
                 email_input.fill(email)
             if not pass_input.input_value():
                 pass_input.fill(password)
 
-            submit_btn = page.locator("button:has-text('Sign In'), button[type='submit']").first
+            # 调试：打印页面按钮
             try:
-                submit_btn.click(force=True, timeout=10000)
-            except Exception:
-                page.keyboard.press("Enter")
+                btns = page.evaluate("""() => {
+                    return Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"]')).map(b => b.textContent?.trim()?.substring(0,30) || b.value || b.type)
+                }""")
+                log(f"[{email}] 页面按钮: {btns}", "INFO")
+            except:
+                pass
+
+            # 尝试多种按钮选择器
+            submit_clicked = False
+            for selector in [
+                "button[type='submit']",
+                "input[type='submit']",
+                "button:has-text('Sign In')",
+                "button:has-text('Sign in')",
+                "button:has-text('Login')",
+                "button:has-text('Log In')",
+                "button:has-text('Se connecter')",
+                "button:has-text('Connexion')",
+                "button:has-text('Entrer')",
+                "button:has-text('Valider')",
+                "button:has-text('Submit')",
+                "button.btn-primary",
+                "button.btn",
+                "form button",
+            ]:
+                try:
+                    btn = page.locator(selector).first
+                    if btn.is_visible(timeout=2000):
+                        btn.click(force=True, timeout=5000)
+                        log(f"[{email}] 点击按钮: {selector}", "INFO")
+                        submit_clicked = True
+                        break
+                except:
+                    continue
+
+            if not submit_clicked:
+                log(f"[{email}] 未找到提交按钮，按回车", "WARN")
+                pass_input.press("Enter")
 
             time.sleep(6)
 
