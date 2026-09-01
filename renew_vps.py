@@ -167,6 +167,23 @@ def process_single_account(p, email, password, acc_index, total_accs):
             page.goto(f"{BASE_URL}/connexion", wait_until="domcontentloaded", timeout=30000)
             time.sleep(4)
 
+            # 2.5 等待 Cloudflare challenge 完成（如果有）
+            log(f"[{email}] [第 {attempt} 次] 检查 Cloudflare challenge...")
+            for cf_wait in range(60):
+                page_content = page.content()
+                if "Just a moment" not in page_content and "cloudflare" not in page_content.lower():
+                    log(f"[{email}] ✅ Cloudflare challenge 已通过（等待 {cf_wait}s）")
+                    break
+                if "cdn-cgi" in page_content and "status" in page_content:
+                    status_match = re.search(r'"status":"(\w+)"', page_content)
+                    if status_match and status_match.group(1) == "ok":
+                        log(f"[{email}] ✅ Cloudflare challenge 已通过")
+                        break
+                time.sleep(1)
+            else:
+                log(f"[{email}] ⚠️ Cloudflare challenge 等待超时(60s)，继续尝试...", "WARN")
+                page.screenshot(path=f"cf_challenge_{acc_index}.png")
+
             # 3. 输入账号密码
             email_input = page.locator("input[type='email'], input[name='email'], input[name='username']").first
             pass_input = page.locator("input[type='password'], input[name='password']").first
