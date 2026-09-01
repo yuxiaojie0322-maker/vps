@@ -15,7 +15,8 @@ from datetime import datetime
 
 # ========== 配置 ==========
 NOPECHA_KEY = os.environ.get("NOPECHA_KEY", "").strip()
-PROXY_URL = os.environ.get("PROXY_URL", "").strip()
+# Playwright 仅支持 http/socks5。TUIC 节点需经本地 Sing-box/Clash 转发为本地 socks5 端口
+PROXY_URL = os.environ.get("PROXY_URL", "socks5://127.0.0.1:10808").strip()
 BASE_URL = "https://free.vpsfree.es"
 EXT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "scripts", "extensions", "nopecha", "unpacked")
@@ -81,7 +82,6 @@ def get_accounts():
     raw_multi = os.environ.get("VPS_ACCOUNTS", "").strip()
     
     if raw_multi:
-        # 多账号模式：支持 ---- 分隔、冒号分隔、逗号分隔
         for line in raw_multi.splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
@@ -98,7 +98,6 @@ def get_accounts():
             if len(parts) == 2:
                 accounts.append({"email": parts[0].strip(), "password": parts[1].strip()})
     
-    # 兼容旧的单账号环境变量
     if not accounts:
         single_email = os.environ.get("VPS_EMAIL", "").strip()
         single_pwd = os.environ.get("VPS_PASSWORD", "").strip()
@@ -128,17 +127,16 @@ def process_single_account(p, email, password, acc_index, total_accs):
         clean_proxy = PROXY_URL.split("#")[0].strip()
         if clean_proxy.startswith(("http://", "https://", "socks5://", "socks4://")):
             proxy_config = {"server": clean_proxy}
+        else:
+            log(f"[{email}] 代理协议不受 Chromium 支持，请转为 socks5/http: {clean_proxy}", "WARN")
 
-    attempt = 0
-    # ========== 循环重试直到登录并处理成功 ==========
-    for attempt in range(1, 6):  # 最多重试5次
+    # 最多重试5次
+    for attempt in range(1, 6):
         log(f"[{email}] === 第 {attempt} 次尝试 ===")
-        attempt += 1
-        log(f"[{email}] 🔄 [第 {attempt} 次尝试] 正在启动独立会话...")
+        log(f"[{email}] 🔄 正在启动独立会话...")
         browser = None
 
         try:
-            # 每个账号使用独立的临时数据目录，防止 Cookie 互相污染
             user_data_dir = f"/tmp/playwright-user-{acc_index}"
             browser = p.chromium.launch_persistent_context(
                 user_data_dir=user_data_dir,
@@ -205,39 +203,12 @@ def process_single_account(p, email, password, acc_index, total_accs):
             time.sleep(2)
 
             # 5. 重新确认账号密码
-            try:
-                ev = email_input.input_value()
-                pv = pass_input.input_value()
-                log(f"[{email}] 调试: email_field={ev[:20] if ev else '空'}, pass_field={'有值' if pv else '空'}", "INFO")
-            except:
-                log(f"[{email}] 调试: 无法读取字段值", "WARN")
             if not email_input.input_value():
                 email_input.fill(email)
-                log(f"[{email}] 重新填入邮箱", "INFO")
             if not pass_input.input_value():
                 pass_input.fill(password)
-                log(f"[{email}] 重新填入密码", "INFO")
 
-            # 检查 captcha response
-            try:
-                cap_resp = page.evaluate("""() => {
-                    const t = document.querySelector('textarea[name="h-captcha-response"]');
-                    return t ? t.value.substring(0, 30) : 'no textarea';
-                }""")
-                log(f"[{email}] 调试: captcha_response={cap_resp}", "INFO")
-            except:
-                pass
-
-            # 调试：打印页面按钮
-            try:
-                btns = page.evaluate("""() => {
-                    return Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"]')).map(b => b.textContent?.trim()?.substring(0,30) || b.value || b.type)
-                }""")
-                log(f"[{email}] 页面按钮: {btns}", "INFO")
-            except:
-                pass
-
-            # 尝试多种按钮选择器
+            # 点击提交按钮
             submit_clicked = False
             for selector in [
                 "button[type='submit']",
@@ -262,7 +233,7 @@ def process_single_account(p, email, password, acc_index, total_accs):
                         log(f"[{email}] 点击按钮: {selector}", "INFO")
                         submit_clicked = True
                         break
-                except:
+                except Exception:
                     continue
 
             if not submit_clicked:
@@ -271,27 +242,16 @@ def process_single_account(p, email, password, acc_index, total_accs):
 
             time.sleep(6)
 
-            # 调试：打印提交后的页面状态
-            try:
-                after_url = page.url
-                after_text = page.evaluate("() => document.body?.innerText?.substring(0, 500) || ''")
-                log(f"[{email}] 调试: 提交后URL={after_url[:60]}", "INFO")
-                log(f"[{email}] 调试: 提交后页面={after_text[:200]}", "INFO")
-                page.screenshot(path=f"after_submit_{attempt}.png")
-            except:
-                pass
-
             # 检查登录结果
             current_url = page.url.lower()
             if "connexion" in current_url or "login" in current_url:
                 log(f"[{email}] ❌ [第 {attempt} 次] 登录失败，留在登录页。将在 {RETRY_DELAY} 秒后重新尝试...", "WARN")
-                err_shot = f"login_failed_{acc_index}.png"
                 try:
-                    page.screenshot(path=err_shot)
+                    page.screenshot(path=f"login_failed_{acc_index}.png")
                 except Exception:
                     pass
                 time.sleep(RETRY_DELAY)
-                continue  # 重试
+                continue
 
             log(f"[{email}] 🎉 登录成功！正在进入实例详情页...")
             time.sleep(3)
@@ -317,23 +277,29 @@ def process_single_account(p, email, password, acc_index, total_accs):
             body_text = page.locator("body").inner_text()
             expires_str = "未获取到"
             m_exp = re.search(r"Expires:\s*([^\n\r]+)", body_text)
-            if m_exp: expires_str = m_exp.group(1).strip()
+            if m_exp:
+                expires_str = m_exp.group(1).strip()
 
             renewal_countdown = "已开放"
             m_open = re.search(r"Renewal opens in\s*([^\n\r]+)", body_text)
-            if m_open: renewal_countdown = f"Renewal opens in {m_open.group(1).strip()}"
+            if m_open:
+                renewal_countdown = f"Renewal opens in {m_open.group(1).strip()}"
 
             uptime_str = "正常运行中"
             m_uptime = re.search(r"(Running since[^\n\r]+|Uptime[^\n\r]+)", body_text)
-            if m_uptime: uptime_str = m_uptime.group(1).strip()
+            if m_uptime:
+                uptime_str = m_uptime.group(1).strip()
 
             cpu_str, mem_str, disk_str = "0.0%", "0.0%", "0.0%"
             m_cpu = re.search(r"([\d.]+%)\s*CPU", body_text, re.I)
-            if m_cpu: cpu_str = m_cpu.group(1)
+            if m_cpu:
+                cpu_str = m_cpu.group(1)
             m_mem = re.search(r"([\d.]+%)\s*MEMORY", body_text, re.I)
-            if m_mem: mem_str = m_mem.group(1)
+            if m_mem:
+                mem_str = m_mem.group(1)
             m_disk = re.search(r"([\d.]+%)\s*DISK", body_text, re.I)
-            if m_disk: disk_str = m_disk.group(1)
+            if m_disk:
+                disk_str = m_disk.group(1)
 
             # 8. 自动点击续期
             action_result = "⏸ 暂未开放（仅到期前24小时内可点）"
@@ -346,7 +312,8 @@ def process_single_account(p, email, password, acc_index, total_accs):
                         time.sleep(3)
                         try:
                             confirm_btn = page.locator("button:has-text('Confirm'), button:has-text('确定'), button:has-text('Yes')").first
-                            if confirm_btn.is_visible(): confirm_btn.click()
+                            if confirm_btn.is_visible():
+                                confirm_btn.click()
                         except Exception:
                             pass
                         action_result = "🎉 <b>成功完成 7 天续期！</b>"
@@ -375,7 +342,7 @@ def process_single_account(p, email, password, acc_index, total_accs):
             )
             send_tg_photo(shot_path, caption)
             log(f"[{email}] ✅ 账号处理成功完成！")
-            return True  # 成功，跳出当前账号的无限重试循环
+            return True
 
         except Exception as e:
             log(f"[{email}] ❌ [第 {attempt} 次] 处理流程异常: {e}，将在 {RETRY_DELAY} 秒后重试...", "ERROR")
@@ -387,9 +354,9 @@ def process_single_account(p, email, password, acc_index, total_accs):
                 except Exception:
                     pass
 
-
     log(f"[{email}] ❌ 5次尝试后仍失败，跳过此账号", "ERROR")
     return False
+
 
 def main():
     log("=" * 40)
