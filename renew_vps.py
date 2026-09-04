@@ -13,6 +13,40 @@ import time
 import requests
 from datetime import datetime
 
+# ========== NopeCHA API ==========
+def solve_hcaptcha_api(sitekey, pageurl):
+    """NopeCHA API 解 hCaptcha（插件失效时的兜底方案）"""
+    if not NOPECHA_KEY:
+        return None
+    try:
+        import urllib.request, json, ssl
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        payload = json.dumps({
+            "key": NOPECHA_KEY,
+            "type": "hcaptcha",
+            "data": {"sitekey": sitekey, "pageurl": pageurl}
+        }).encode()
+        proxy = urllib.request.ProxyHandler({"https": PROXY_URL, "http": PROXY_URL})
+        opener = urllib.request.build_opener(proxy)
+        req = urllib.request.Request(
+            "https://api.nopecha.com",
+            data=payload, method="POST",
+            headers={"Content-Type": "application/json"}
+        )
+        with opener.open(req, timeout=60) as r:
+            result = json.loads(r.read())
+            token = result.get("data")
+            if token:
+                log(f"[NopeCHA API] ✅ hCaptcha token: {token[:25]}...")
+                return token
+            log(f"[NopeCHA API] ❌ {result}", "WARN")
+    except Exception as e:
+        log(f"[NopeCHA API] 异常: {e}", "WARN")
+    return None
+
+
 # ========== 配置 ==========
 NOPECHA_KEY = os.environ.get("NOPECHA_KEY", "").strip()
 # Playwright 仅支持 http/socks5。TUIC 节点需经本地 Sing-box/Clash 转发为本地 socks5 端口
@@ -162,10 +196,34 @@ def process_single_account(p, email, password, acc_index, total_accs):
                 except Exception:
                     pass
 
-            # 2. 打开登录页
+            # 1.5 预检测代理连通性
+            log(f"[{email}] [第 {attempt} 次] 预检测代理...")
+            import urllib.request, ssl
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            proxy = urllib.request.ProxyHandler({"https": PROXY_URL, "http": PROXY_URL})
+            opener = urllib.request.build_opener(proxy)
+            try:
+                req = urllib.request.Request(BASE_URL, headers={"User-Agent": "Mozilla/5.0"})
+                opener.open(req, timeout=15)
+                log(f"[{email}] ✅ 代理连通，VPSFree 可达")
+            except Exception as e:
+                log(f"[{email}] ⚠️ 代理预检失败: {e}，继续尝试...", "WARN")
+
+            # 2. 打开登录页（增加到120秒，适应CF challenge）
             log(f"[{email}] [第 {attempt} 次] 打开登录页: {BASE_URL}/connexion ...")
-            page.goto(f"{BASE_URL}/connexion", wait_until="domcontentloaded", timeout=30000)
-            time.sleep(4)
+            try:
+                page.goto(f"{BASE_URL}/connexion", wait_until="load", timeout=120000)
+                log(f"[{email}] ✅ 页面加载完成")
+            except Exception as e:
+                log(f"[{email}] ❌ 页面加载超时(120s): {e}", "WARN")
+                try:
+                    page.screenshot(path=f"goto_timeout_{acc_index}.png")
+                except:
+                    pass
+                # 仍然继续，因为CF可能在后台渲染
+            time.sleep(5)
 
             # 2.5 等待 Cloudflare challenge 完成（如果有）
             log(f"[{email}] [第 {attempt} 次] 检查 Cloudflare challenge...")
