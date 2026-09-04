@@ -232,10 +232,10 @@ def process_single_account(p, email, password, acc_index, total_accs):
                     pass
             time.sleep(5)
 
-            # 2.5 等待 Cloudflare challenge 完成（最多 90s）
+            # 2.5 等待 Cloudflare challenge 完成（最多 30s，够用即可）
             log(f"[{email}] [第 {attempt} 次] 等待 Cloudflare challenge 通过...")
             cf_passed = False
-            for cf_wait in range(90):
+            for cf_wait in range(30):
                 try:
                     page_content = page.content()
                     if "Just a moment" not in page_content and "cloudflare" not in page_content.lower():
@@ -253,7 +253,7 @@ def process_single_account(p, email, password, acc_index, total_accs):
                 time.sleep(1)
 
             if not cf_passed:
-                log(f"[{email}] ⚠️ Cloudflare challenge 等待超时(90s)，继续尝试...", "WARN")
+                log(f"[{email}] ⚠️ Cloudflare challenge 等待超时(30s)，继续尝试...", "WARN")
                 try:
                     page.screenshot(path=f"cf_challenge_{acc_index}.png")
                 except Exception:
@@ -434,8 +434,16 @@ def process_single_account(p, email, password, acc_index, total_accs):
                     except Exception as e:
                         log(f"[{email}] Manage VPS 导航失败: {e}", "WARN")
 
-            # 7. 提取状态信息
-            body_text = page.locator("body").inner_text()
+            # 7. 提取状态信息（先等页面稳定，再取文本）
+            time.sleep(2)  # 等导航动画完成
+            try:
+                # 等待页面有实质内容
+                page.wait_for_selector("body", state="attached", timeout=15000)
+                body_text = page.locator("body").inner_text(timeout=15000)
+                log(f"[{email}] 页面文本已获取，长度: {len(body_text)} 字符")
+            except Exception as e:
+                log(f"[{email}] body inner_text 超时: {e}，使用空字符串继续", "WARN")
+                body_text = ""
             expires_str = "未获取到"
             m_exp = re.search(r"Expires:\s*([^\n\r]+)", body_text)
             if m_exp:
