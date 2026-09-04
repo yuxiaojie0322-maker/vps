@@ -13,7 +13,7 @@ permissions:
 jobs:
   renew:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 40  # 5个账号 × 平均6分钟 = 30分钟，冗余
 
     steps:
       - name: 检出仓库代码
