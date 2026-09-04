@@ -341,7 +341,10 @@ def process_single_account(p, email, password, acc_index, total_accs):
 
             if not submit_clicked:
                 log(f"[{email}] 未找到提交按钮，按回车", "WARN")
-                pass_input.press("Enter")
+                try:
+                    pass_input.press("Enter", timeout=10000)
+                except Exception:
+                    log(f"[{email}] 按回车超时（页面状态异常），跳过此尝试", "WARN")
 
             time.sleep(6)
 
@@ -359,22 +362,77 @@ def process_single_account(p, email, password, acc_index, total_accs):
             log(f"[{email}] 🎉 登录成功！正在进入实例详情页...")
             time.sleep(3)
 
-            # 6. 进入 Manage -> Manage VPS
-            try:
-                manage_btn = page.locator("a:has-text('Manage'), button:has-text('Manage')").first
-                if manage_btn.is_visible():
-                    manage_btn.click()
-                    time.sleep(4)
-            except Exception:
-                pass
+            # 6. 先检查当前页面——防止已在实例详情页或意外在 Order 页面
+            current_url = page.url.lower()
+            log(f"[{email}] 当前页面: {current_url}")
+            # 如果已经在实例详情页（含有 instance/vps/serveur 等关键字），跳过导航
+            if any(k in current_url for k in ["/instance", "/vps", "/serveur", "/vm", "/server"]):
+                log(f"[{email}] ✅ 已在实例详情页，跳过 Manage 导航")
+            elif "/order" in current_url or "commande" in current_url:
+                # 在 Order 页面：说明账号无实例（已达1项目上限）
+                log(f"[{email}] ⚠️ 检测到 Order 页面，账号可能已达项目上限，无法新建", "WARN")
+                action_result = "⛔ 账号在 Order 页面（已达项目上限或无实例），跳过"
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                page.screenshot(path=f"instance_{acc_index}.png")
+                caption = (
+                    f"⚠️ <b>VPSFree.es 账号异常 [{acc_index}/{total_accs}]</b>\n"
+                    f"━━━━━━━━━━━━━━━━\n"
+                    f"📧 <b>账号:</b> <code>{email}</code>\n"
+                    f"⚡ <b>状态:</b> {action_result}\n"
+                    f"🔗 <b>页面:</b> <code>{current_url}</code>\n"
+                    f"⏰ <b>检测时间:</b> {now_str}\n"
+                )
+                send_tg_photo(f"instance_{acc_index}.png", caption)
+                browser.close()
+                log(f"[{email}] 账号跳过完成（Order 页面）")
+                return True
+            else:
+                # 需要导航到实例详情页
+                log(f"[{email}] 正在点击 Manage 进入实例详情...")
+                try:
+                    # 优先找明确的实例列表/卡片（排除 Order）
+                    for manage_selector in [
+                        # 实例列表中的 Manage
+                        "table a:has-text('Manage'):not([href*='order']):not([href*='new'])",
+                        "a[href*='/instance/']:has-text('Manage')",
+                        "a[href*='/vps/']:has-text('Manage')",
+                        "a[href*='/vm/']:has-text('Manage')",
+                        # 通用的 Manage（排除会跳到 Order 的）
+                        "a:has-text('Manage'):not([href*='order']):not([href*='new']):not([href*='create'])",
+                        "button:has-text('Manage'):not(:has-text('New')):not(:has-text('Order'))",
+                    ]:
+                        try:
+                            btn = page.locator(manage_selector).first
+                            if btn.is_visible(timeout=3000):
+                                btn.click(timeout=5000)
+                                log(f"[{email}] 点击: {manage_selector}")
+                                time.sleep(3)
+                                break
+                        except Exception:
+                            continue
+                except Exception as e:
+                    log(f"[{email}] Manage 导航失败: {e}", "WARN")
 
-            try:
-                manage_vps_btn = page.locator("a:has-text('Manage VPS'), button:has-text('Manage VPS')").first
-                if manage_vps_btn.is_visible():
-                    manage_vps_btn.click()
-                    time.sleep(4)
-            except Exception:
-                pass
+                # 检查是否到了 Manage VPS 子页面
+                current_url = page.url.lower()
+                if "manage" not in current_url and "/instance" not in current_url and "/vps" not in current_url:
+                    try:
+                        for sub_selector in [
+                            "a:has-text('Manage VPS'):not([href*='order'])",
+                            "a:has-text('Gérer le VPS')",
+                            "button:has-text('Manage VPS')",
+                        ]:
+                            try:
+                                btn = page.locator(sub_selector).first
+                                if btn.is_visible(timeout=3000):
+                                    btn.click(timeout=5000)
+                                    log(f"[{email}] 点击子级: {sub_selector}")
+                                    time.sleep(3)
+                                    break
+                            except Exception:
+                                continue
+                    except Exception as e:
+                        log(f"[{email}] Manage VPS 导航失败: {e}", "WARN")
 
             # 7. 提取状态信息
             body_text = page.locator("body").inner_text()
@@ -404,25 +462,63 @@ def process_single_account(p, email, password, acc_index, total_accs):
             if m_disk:
                 disk_str = m_disk.group(1)
 
-            # 8. 自动点击续期
+            # 8. 自动点击续期（更精准的 selector，排除 Order 页面元素）
             action_result = "⏸ 暂未开放（仅到期前24小时内可点）"
             try:
-                renew_btn = page.locator("button:has-text('Renew for 7 days'), a:has-text('Renew for 7 days'), button:has-text('Renew')").first
-                if renew_btn.is_visible():
-                    is_disabled = renew_btn.get_attribute("disabled") is not None
-                    if not is_disabled and "opens in" not in renewal_countdown:
-                        renew_btn.click()
-                        time.sleep(3)
+                # 先确认当前页是实例详情页
+                detail_url = page.url.lower()
+                if "/order" in detail_url or "commande" in detail_url:
+                    log(f"[{email}] ⚠️ 当前在 Order 页面，跳过续期")
+                else:
+                    # 续期按钮精确 selector
+                    for renew_selector in [
+                        # 7天续期按钮
+                        "button:has-text('Renew for 7 days')",
+                        "a:has-text('Renew for 7 days')",
+                        # 通用 Renew（排除 New/Order）
+                        "button:has-text('Renew'):not(:has-text('New')):not(:has-text('Order'))",
+                        "a:has-text('Renew'):not([href*='order']):not([href*='new'])",
+                        # 法语
+                        "button:has-text('Renouveler')",
+                        "a:has-text('Renouveler')",
+                    ]:
                         try:
-                            confirm_btn = page.locator("button:has-text('Confirm'), button:has-text('确定'), button:has-text('Yes')").first
-                            if confirm_btn.is_visible():
-                                confirm_btn.click()
+                            renew_btn = page.locator(renew_selector).first
+                            if renew_btn.is_visible(timeout=3000):
+                                is_disabled = renew_btn.get_attribute("disabled")
+                                if is_disabled is not None:
+                                    log(f"[{email}] 续期按钮存在但被禁用（disabled），说明未到续期窗口")
+                                    action_result = "⏸ 按钮存在但被禁用（未到续期窗口）"
+                                    break
+                                log(f"[{email}] 发现续期按钮: {renew_selector}")
+                                renew_btn.click(timeout=10000)
+                                time.sleep(3)
+                                # 找确认按钮
+                                for confirm_selector in [
+                                    "button:has-text('Confirm')",
+                                    "button:has-text('Confirmer')",
+                                    "button:has-text('Yes')",
+                                    "button:has-text('Valider')",
+                                ]:
+                                    try:
+                                        confirm_btn = page.locator(confirm_selector).first
+                                        if confirm_btn.is_visible(timeout=2000):
+                                            confirm_btn.click(timeout=5000)
+                                            log(f"[{email}] 点击确认按钮")
+                                            break
+                                    except Exception:
+                                        continue
+                                action_result = "🎉 <b>成功完成续期！</b>"
+                                log(f"[{email}] 续期完成 ✅")
+                                break
                         except Exception:
-                            pass
-                        action_result = "🎉 <b>成功完成 7 天续期！</b>"
-                        log(f"[{email}] 续期完成 ✅")
+                            continue
+                    else:
+                        log(f"[{email}] 未找到续期按钮（可能未到 24h 窗口期）")
+                        action_result = "⏸ 未找到续期按钮（正常：未到 24h 窗口期）"
             except Exception as e:
-                action_result = f"点击异常: {e}"
+                action_result = f"续期操作异常: {e}"
+                log(f"[{email}] 续期异常: {e}", "WARN")
 
             time.sleep(2)
             shot_path = f"instance_{acc_index}.png"
@@ -479,12 +575,19 @@ def main():
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         for idx, acc in enumerate(accounts, start=1):
-            process_single_account(p, acc["email"], acc["password"], idx, total)
+            try:
+                process_single_account(p, acc["email"], acc["password"], idx, total)
+            except Exception as e:
+                log(f"[{acc['email']}] 主流程异常: {e}", "ERROR")
             if idx < total:
                 log("等待 5 秒后处理下一个账号...")
                 time.sleep(5)
 
     log("🎉 所有账号处理完毕！")
+    # 汇总报告
+    summary = f"🖥 <b>VPSFree.es 续期汇总</b>\n━━━━━━━━━━━━━━━━\n处理账号数: {total}\n⏰ 完成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    send_tg_text(summary)
+    log("✅ 汇总已推送至 TG")
 
 
 if __name__ == "__main__":
