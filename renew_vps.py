@@ -10,42 +10,18 @@ import os
 import re
 import sys
 import time
+import json
+import urllib.request
+import ssl
 import requests
 from datetime import datetime
 
-# ========== NopeCHA API ==========
-def solve_hcaptcha_api(sitekey, pageurl):
-    """NopeCHA API 解 hCaptcha（插件失效时的兜底方案）"""
-    if not NOPECHA_KEY:
-        return None
-    try:
-        import urllib.request, json, ssl
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        payload = json.dumps({
-            "key": NOPECHA_KEY,
-            "type": "hcaptcha",
-            "data": {"sitekey": sitekey, "pageurl": pageurl}
-        }).encode()
-        proxy = urllib.request.ProxyHandler({"https": PROXY_URL, "http": PROXY_URL})
-        opener = urllib.request.build_opener(proxy)
-        req = urllib.request.Request(
-            "https://api.nopecha.com",
-            data=payload, method="POST",
-            headers={"Content-Type": "application/json"}
-        )
-        with opener.open(req, timeout=60) as r:
-            result = json.loads(r.read())
-            token = result.get("data")
-            if token:
-                log(f"[NopeCHA API] ✅ hCaptcha token: {token[:25]}...")
-                return token
-            log(f"[NopeCHA API] ❌ {result}", "WARN")
-    except Exception as e:
-        log(f"[NopeCHA API] 异常: {e}", "WARN")
-    return None
-
+# 强制 stdout flush，避免日志看不到
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
 
 # ========== 配置 ==========
 NOPECHA_KEY = os.environ.get("NOPECHA_KEY", "").strip()
@@ -65,7 +41,39 @@ TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "").strip()
 
 def log(msg, level="INFO"):
     t = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{t}] [{level}] {msg}")
+    print(f"[{t}] [{level}] {msg}", flush=True)
+
+
+def solve_hcaptcha_api(sitekey, pageurl):
+    """NopeCHA API 解 hCaptcha（插件失效时的兜底方案）"""
+    if not NOPECHA_KEY:
+        return None
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        payload = json.dumps({
+            "key": NOPECHA_KEY,
+            "type": "hcaptcha",
+            "data": {"sitekey": sitekey, "pageurl": pageurl}
+        }).encode()
+        proxy = urllib.request.ProxyHandler({"https": PROXY_URL, "http": PROXY_URL})
+        opener = urllib.request.build_opener(proxy)
+        req = urllib.request.Request(
+            "https://api.nopecha.com",
+            data=payload, method="POST",
+            headers={"Content-Type": "application/json"}
+        )
+        with opener.open(req, timeout=60) as r:
+            result = json.loads(r.read())
+            token = result.get("data")
+            if token:
+                log(f"[NopeCHA API] ✅ hCaptcha token: {str(token)[:25]}...")
+                return token
+            log(f"[NopeCHA API] ❌ {result}", "WARN")
+    except Exception as e:
+        log(f"[NopeCHA API] 异常: {e}", "WARN")
+    return None
 
 
 def send_tg_photo(photo_path, caption=""):
@@ -114,7 +122,7 @@ def get_accounts():
     """解析单账号或多账号列表"""
     accounts = []
     raw_multi = os.environ.get("VPS_ACCOUNTS", "").strip()
-    
+
     if raw_multi:
         for line in raw_multi.splitlines():
             line = line.strip()
@@ -131,19 +139,20 @@ def get_accounts():
 
             if len(parts) == 2:
                 accounts.append({"email": parts[0].strip(), "password": parts[1].strip()})
-    
+
     if not accounts:
         single_email = os.environ.get("VPS_EMAIL", "").strip()
         single_pwd = os.environ.get("VPS_PASSWORD", "").strip()
         if single_email and single_pwd:
             accounts.append({"email": single_email, "password": single_pwd})
-            
+
     return accounts
 
 
 def process_single_account(p, email, password, acc_index, total_accs):
     log(f"▶️ 开始处理账号 [{acc_index}/{total_accs}]: {email}")
     ext_ok = os.path.exists(EXT_PATH) and os.path.exists(os.path.join(EXT_PATH, "manifest.json"))
+    log(f"[{email}] NopeCHA 插件路径: {EXT_PATH}，存在={ext_ok}")
 
     launch_args = [
         "--no-sandbox",
@@ -172,6 +181,7 @@ def process_single_account(p, email, password, acc_index, total_accs):
 
         try:
             user_data_dir = f"/tmp/playwright-user-{acc_index}"
+            t_launch = time.time()
             browser = p.chromium.launch_persistent_context(
                 user_data_dir=user_data_dir,
                 headless=False,
@@ -184,92 +194,107 @@ def process_single_account(p, email, password, acc_index, total_accs):
                 bypass_csp=True,
                 ignore_https_errors=True,
             )
+            log(f"[{email}] ✅ Chromium 启动完成 (耗时 {time.time()-t_launch:.1f}s)")
 
             page = browser.pages[0] if browser.pages else browser.new_page()
             page.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined });")
 
-            # 1. 激活 NopeCHA
+            # 1. 激活 NopeCHA（插件模式，仅当插件加载成功时）
             if ext_ok and NOPECHA_KEY:
                 try:
-                    page.goto(f"https://nopecha.com/setup#{NOPECHA_KEY}", wait_until="domcontentloaded", timeout=15000)
+                    log(f"[{email}] 激活 NopeCHA 插件...")
+                    page.goto(f"https://nopecha.com/setup#{NOPECHA_KEY}", wait_until="commit", timeout=30000)
                     time.sleep(3)
-                except Exception:
-                    pass
+                except Exception as e:
+                    log(f"[{email}] NopeCHA setup 失败（不影响主流程）: {e}", "WARN")
 
-            # 1.5 预检测代理连通性
-            log(f"[{email}] [第 {attempt} 次] 预检测代理...")
-            import urllib.request, ssl
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            proxy = urllib.request.ProxyHandler({"https": PROXY_URL, "http": PROXY_URL})
-            opener = urllib.request.build_opener(proxy)
+            # 1.5 代理连通性预检测
+            log(f"[{email}] 预检测代理...")
             try:
                 req = urllib.request.Request(BASE_URL, headers={"User-Agent": "Mozilla/5.0"})
+                proxy = urllib.request.ProxyHandler({"https": PROXY_URL, "http": PROXY_URL})
+                opener = urllib.request.build_opener(proxy)
                 opener.open(req, timeout=15)
-                log(f"[{email}] ✅ 代理连通，VPSFree 可达")
+                log(f"[{email}] ✅ 代理可达")
             except Exception as e:
-                log(f"[{email}] ⚠️ 代理预检失败: {e}，继续尝试...", "WARN")
+                log(f"[{email}] ⚠️ 代理预检: {e}", "WARN")
 
-            # 2. 打开登录页（增加到120秒，适应CF challenge）
+            # 2. 打开登录页（CF 经常要 40-60s，timeout 改 120s）
             log(f"[{email}] [第 {attempt} 次] 打开登录页: {BASE_URL}/connexion ...")
             try:
-                page.goto(f"{BASE_URL}/connexion", wait_until="load", timeout=120000)
-                log(f"[{email}] ✅ 页面加载完成")
+                page.goto(f"{BASE_URL}/connexion", wait_until="commit", timeout=120000)
+                log(f"[{email}] ✅ 页面提交请求完成")
             except Exception as e:
                 log(f"[{email}] ❌ 页面加载超时(120s): {e}", "WARN")
                 try:
                     page.screenshot(path=f"goto_timeout_{acc_index}.png")
-                except:
+                except Exception:
                     pass
-                # 仍然继续，因为CF可能在后台渲染
             time.sleep(5)
 
-            # 2.5 等待 Cloudflare challenge 完成（如果有）
-            log(f"[{email}] [第 {attempt} 次] 检查 Cloudflare challenge...")
-            for cf_wait in range(60):
-                page_content = page.content()
-                if "Just a moment" not in page_content and "cloudflare" not in page_content.lower():
-                    log(f"[{email}] ✅ Cloudflare challenge 已通过（等待 {cf_wait}s）")
-                    break
-                if "cdn-cgi" in page_content and "status" in page_content:
-                    status_match = re.search(r'"status":"(\w+)"', page_content)
-                    if status_match and status_match.group(1) == "ok":
-                        log(f"[{email}] ✅ Cloudflare challenge 已通过")
+            # 2.5 等待 Cloudflare challenge 完成（最多 90s）
+            log(f"[{email}] [第 {attempt} 次] 等待 Cloudflare challenge 通过...")
+            cf_passed = False
+            for cf_wait in range(90):
+                try:
+                    page_content = page.content()
+                    if "Just a moment" not in page_content and "cloudflare" not in page_content.lower():
+                        log(f"[{email}] ✅ Cloudflare challenge 已通过（等待 {cf_wait}s）")
+                        cf_passed = True
                         break
+                    if "cdn-cgi" in page_content and "status" in page_content:
+                        status_match = re.search(r'"status":"(\w+)"', page_content)
+                        if status_match and status_match.group(1) == "ok":
+                            log(f"[{email}] ✅ Cloudflare challenge 已通过")
+                            cf_passed = True
+                            break
+                except Exception:
+                    pass
                 time.sleep(1)
-            else:
-                log(f"[{email}] ⚠️ Cloudflare challenge 等待超时(60s)，继续尝试...", "WARN")
-                page.screenshot(path=f"cf_challenge_{acc_index}.png")
+
+            if not cf_passed:
+                log(f"[{email}] ⚠️ Cloudflare challenge 等待超时(90s)，继续尝试...", "WARN")
+                try:
+                    page.screenshot(path=f"cf_challenge_{acc_index}.png")
+                except Exception:
+                    pass
 
             # 3. 输入账号密码
-            email_input = page.locator("input[type='email'], input[name='email'], input[name='username']").first
-            pass_input = page.locator("input[type='password'], input[name='password']").first
-            email_input.fill(email)
-            pass_input.fill(password)
-            time.sleep(1)
+            log(f"[{email}] 填写账号密码...")
+            try:
+                email_input = page.locator("input[type='email'], input[name='email'], input[name='username']").first
+                pass_input = page.locator("input[type='password'], input[name='password']").first
+                email_input.fill(email)
+                pass_input.fill(password)
+                time.sleep(1)
+            except Exception as e:
+                log(f"[{email}] ❌ 找不到输入框: {e}", "WARN")
+                continue
 
-            # 4. 等待打码
+            # 4. 等待打码（120s）
             log(f"[{email}] [第 {attempt} 次] 等待 NopeCHA 自动识别 hCaptcha 验证码...")
             captcha_solved = False
             for i in range(120):
-                solved = page.evaluate("""() => {
-                    const tas = document.querySelectorAll('textarea[name="h-captcha-response"], textarea[name="g-recaptcha-response"]');
-                    for (const ta of tas) {
-                        if (ta.value && ta.value.trim().length > 20) return true;
-                    }
-                    const iframes = document.querySelectorAll('iframe[src*="hcaptcha"], iframe[title*="hcaptcha"]');
-                    for (const f of iframes) {
-                        try {
-                            if (f.contentDocument?.querySelector('[aria-checked="true"], .check')) return true;
-                        } catch(e) {}
-                    }
-                    return false;
-                }""")
-                if solved:
-                    captcha_solved = True
-                    log(f"[{email}] 🎉 验证码破解成功（耗时 {i + 1} 秒）✅")
-                    break
+                try:
+                    solved = page.evaluate("""() => {
+                        const tas = document.querySelectorAll('textarea[name="h-captcha-response"], textarea[name="g-recaptcha-response"]');
+                        for (const ta of tas) {
+                            if (ta.value && ta.value.trim().length > 20) return true;
+                        }
+                        const iframes = document.querySelectorAll('iframe[src*="hcaptcha"], iframe[title*="hcaptcha"]');
+                        for (const f of iframes) {
+                            try {
+                                if (f.contentDocument?.querySelector('[aria-checked="true"], .check')) return true;
+                            } catch(e) {}
+                        }
+                        return false;
+                    }""")
+                    if solved:
+                        captcha_solved = True
+                        log(f"[{email}] 🎉 验证码破解成功（耗时 {i + 1} 秒）✅")
+                        break
+                except Exception:
+                    pass
                 time.sleep(1)
 
             if not captcha_solved:
@@ -278,10 +303,13 @@ def process_single_account(p, email, password, acc_index, total_accs):
             time.sleep(2)
 
             # 5. 重新确认账号密码
-            if not email_input.input_value():
-                email_input.fill(email)
-            if not pass_input.input_value():
-                pass_input.fill(password)
+            try:
+                if not email_input.input_value():
+                    email_input.fill(email)
+                if not pass_input.input_value():
+                    pass_input.fill(password)
+            except Exception:
+                pass
 
             # 点击提交按钮
             submit_clicked = False
@@ -445,6 +473,8 @@ def main():
 
     total = len(accounts)
     log(f"共检测到 {total} 个账号待处理...")
+    for i, acc in enumerate(accounts, 1):
+        log(f"  {i}. {acc['email']}")
 
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
