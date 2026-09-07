@@ -55,37 +55,37 @@ jobs:
             chmod +x ./sing-box
 
             cat << 'EOF' > config.json
-            {
-              "inbounds": [
-                {
-                  "type": "mixed",
-                  "tag": "mixed-in",
-                  "listen": "127.0.0.1",
-                  "listen_port": 7890
-                }
-              ],
-              "outbounds": [
-                {
-                  "type": "tuic",
-                  "tag": "tuic-out",
-                  "server": "payload.ingress.hnhost.net",
-                  "server_port": 10373,
-                  "uuid": "adf4e830-d1b1-4120-9f26-6a6b1f04d6d2",
-                  "password": "",
-                  "congestion_control": "bbr",
-                  "udp_relay_mode": "native",
-                  "tls": {
-                    "enabled": true,
-                    "server_name": "www.bing.com",
-                    "insecure": true,
-                    "alpn": [
-                      "h3"
-                    ]
-                  }
-                }
-              ]
-            }
-            EOF
+{
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 7890
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "tuic",
+      "tag": "tuic-out",
+      "server": "payload.ingress.hnhost.net",
+      "server_port": 10373,
+      "uuid": "adf4e830-d1b1-4120-9f26-6a6b1f04d6d2",
+      "password": "",
+      "congestion_control": "bbr",
+      "udp_relay_mode": "native",
+      "tls": {
+        "enabled": true,
+        "server_name": "www.bing.com",
+        "insecure": true,
+        "alpn": [
+          "h3"
+        ]
+      }
+    }
+  ]
+}
+EOF
 
             ./sing-box run -c config.json > sing-box.log 2>&1 &
             sleep 3
