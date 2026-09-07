@@ -11,16 +11,18 @@ import json
 import urllib.parse
 
 def main():
-    custom_proxy = os.environ.get("CUSTOM_PROXY", "").strip()
+    custom_proxy = os.environ.get("CUSTOM_PROXY", "").strip().strip("'\"")
     github_env = os.environ.get("GITHUB_ENV")
 
+    schema = custom_proxy.split("://")[0].lower() if "://" in custom_proxy else ""
+    print(f"🔍 代理配置检测: 长度={len(custom_proxy)}, 协议={schema or '未指定'}")
+
     # 1. 如果是原生 HTTP/SOCKS 协议，直接使用
-    if any(custom_proxy.startswith(p) for p in ("http://", "https://", "socks5://", "socks4://")):
+    if schema in ("http", "https", "socks5", "socks4"):
         print(f"✅ 检测到原生代理协议: {custom_proxy.split('@')[-1]}")
         if github_env:
             with open(github_env, "a", encoding="utf-8") as f:
                 f.write(f"PROXY_URL={custom_proxy}\n")
-                f.write("NEED_SINGBOX=0\n")
         return
 
     # 2. 否则需要 sing-box 转换 (tuic:// 或默认内置 TUIC)
@@ -44,7 +46,7 @@ def main():
         }
     }
 
-    if custom_proxy.startswith("tuic://"):
+    if schema == "tuic":
         try:
             u = urllib.parse.urlparse(custom_proxy)
             qs = urllib.parse.parse_qs(u.query)

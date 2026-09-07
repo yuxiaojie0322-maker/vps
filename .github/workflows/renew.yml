@@ -45,14 +45,16 @@ jobs:
         run: |
           set -euo pipefail
           python setup_proxy.py
-          if [ "${NEED_SINGBOX:-0}" = "1" ]; then
+          if [ -f config.json ]; then
             echo "📥 下载并启动 sing-box 服务..."
             curl -sLo sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.13.19/sing-box-1.13.19-linux-amd64.tar.gz
             tar -xzf sing-box.tar.gz
             mv sing-box-1.13.19-linux-amd64/sing-box ./sing-box
             chmod +x ./sing-box
             ./sing-box run -c config.json > sing-box.log 2>&1 &
-            sleep 3
+            sleep 4
+            echo "--- sing-box 运行日志 ---"
+            cat sing-box.log || true
             PROXY_IP=$(curl -s --max-time 10 -x http://127.0.0.1:7890 https://api.ipify.org || echo "")
             echo "✅ 代理出口 IP: ${PROXY_IP:-未知 (隧道已建立)}"
           fi
