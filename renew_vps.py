@@ -1,9 +1,12 @@
 """
-VPSFree.es 免费面板自动续期脚本 (多账号批量续期版 - 登录无限重试直至成功)
-- 支持单账号 (VPS_EMAIL/VPS_PASSWORD) 与 多账号 (VPS_ACCOUNTS)
-- 登录错误自动重试，直至成功为止
-- 多账号隔离会话独立执行
-- 每个账号独立发送 TG 仪表盘截图与到期报告
+VPSFree.es 免费面板自动续期脚本 (优化增强版)
+- 优化 Cloudflare challenge 检测：检测到表单就绪立即放行，彻底消除 30s 死等
+- 修复 hCaptcha 误判：严禁匹配通用 .check 类名，防止 1 秒误判导致首次登录必败
+- 优化表单提交：精准匹配 form 提交按钮，回车改用 page.keyboard.press 避免超 Detached 异常
+- 优化 DOM 文本提取：使用 page.evaluate() 瞬时获取，杜绝 body.inner_text 15s 超时
+- 优化续期按钮探测：单次聚合选择器 + disabled 判定，彻底消除 18s 逐项探测延迟
+- 启用 NopeCHA API 兜底：插件打码超时时自动调用 API 求解
+- 账号隔离与 Telegram 独立报告推送
 """
 
 import os
@@ -16,7 +19,7 @@ import ssl
 import requests
 from datetime import datetime
 
-# 强制 stdout flush，避免日志看不到
+# 强制 stdout / stderr 实时刷新
 try:
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
@@ -25,14 +28,13 @@ except Exception:
 
 # ========== 配置 ==========
 NOPECHA_KEY = os.environ.get("NOPECHA_KEY", "").strip()
-# Playwright 仅支持 http/socks5。TUIC 节点需经本地 Sing-box/Clash 转发为本地 socks5 端口
-PROXY_URL = os.environ.get("PROXY_URL", "socks5://127.0.0.1:10808").strip()
+PROXY_URL = os.environ.get("PROXY_URL", "").strip()
 BASE_URL = "https://free.vpsfree.es"
 EXT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "scripts", "extensions", "nopecha", "unpacked")
 
 # 失败重试等待间隔（秒）
-RETRY_DELAY = int(os.environ.get("RETRY_DELAY", "10"))
+RETRY_DELAY = int(os.environ.get("RETRY_DELAY", "5"))
 
 # Telegram 推送配置
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "").strip()
@@ -45,8 +47,8 @@ def log(msg, level="INFO"):
 
 
 def solve_hcaptcha_api(sitekey, pageurl):
-    """NopeCHA API 解 hCaptcha（插件失效时的兜底方案）"""
-    if not NOPECHA_KEY:
+    """NopeCHA HTTP API 解 hCaptcha（插件失效或超时时的兜底方案）"""
+    if not NOPECHA_KEY or not sitekey:
         return None
     try:
         ctx = ssl.create_default_context()
@@ -57,22 +59,24 @@ def solve_hcaptcha_api(sitekey, pageurl):
             "type": "hcaptcha",
             "data": {"sitekey": sitekey, "pageurl": pageurl}
         }).encode()
-        proxy = urllib.request.ProxyHandler({"https": PROXY_URL, "http": PROXY_URL})
-        opener = urllib.request.build_opener(proxy)
+        handlers = []
+        if PROXY_URL:
+            handlers.append(urllib.request.ProxyHandler({"https": PROXY_URL, "http": PROXY_URL}))
+        opener = urllib.request.build_opener(*handlers)
         req = urllib.request.Request(
             "https://api.nopecha.com",
             data=payload, method="POST",
             headers={"Content-Type": "application/json"}
         )
-        with opener.open(req, timeout=60) as r:
+        with opener.open(req, timeout=45) as r:
             result = json.loads(r.read())
             token = result.get("data")
             if token:
-                log(f"[NopeCHA API] ✅ hCaptcha token: {str(token)[:25]}...")
+                log(f"[NopeCHA API 兜底] ✅ hCaptcha token 获取成功: {str(token)[:25]}...")
                 return token
-            log(f"[NopeCHA API] ❌ {result}", "WARN")
+            log(f"[NopeCHA API 兜底] ❌ {result}", "WARN")
     except Exception as e:
-        log(f"[NopeCHA API] 异常: {e}", "WARN")
+        log(f"[NopeCHA API 兜底] 异常: {e}", "WARN")
     return None
 
 
@@ -152,7 +156,7 @@ def get_accounts():
 def process_single_account(p, email, password, acc_index, total_accs):
     log(f"▶️ 开始处理账号 [{acc_index}/{total_accs}]: {email}")
     ext_ok = os.path.exists(EXT_PATH) and os.path.exists(os.path.join(EXT_PATH, "manifest.json"))
-    log(f"[{email}] NopeCHA 插件路径: {EXT_PATH}，存在={ext_ok}")
+    log(f"[{email}] NopeCHA 插件路径: {EXT_PATH}，可用={ext_ok}")
 
     launch_args = [
         "--no-sandbox",
@@ -173,14 +177,14 @@ def process_single_account(p, email, password, acc_index, total_accs):
         else:
             log(f"[{email}] 代理协议不受 Chromium 支持，请转为 socks5/http: {clean_proxy}", "WARN")
 
-    # 最多重试5次
-    for attempt in range(1, 6):
-        log(f"[{email}] === 第 {attempt} 次尝试 ===")
-        log(f"[{email}] 🔄 正在启动独立会话...")
+    # 单账号最多尝试 3 次（原 5 次过长，容易耗尽工作流 40 分钟上限）
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        log(f"[{email}] === 第 {attempt}/{max_attempts} 次尝试 ===")
         browser = None
 
         try:
-            user_data_dir = f"/tmp/playwright-user-{acc_index}"
+            user_data_dir = f"/tmp/playwright-user-{acc_index}-{attempt}"
             t_launch = time.time()
             browser = p.chromium.launch_persistent_context(
                 user_data_dir=user_data_dir,
@@ -189,8 +193,8 @@ def process_single_account(p, email, password, acc_index, total_accs):
                 args=launch_args,
                 ignore_default_args=["--enable-automation"],
                 viewport={"width": 1440, "height": 900},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                locale="zh-CN",
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                locale="en-US",
                 bypass_csp=True,
                 ignore_https_errors=True,
             )
@@ -199,110 +203,114 @@ def process_single_account(p, email, password, acc_index, total_accs):
             page = browser.pages[0] if browser.pages else browser.new_page()
             page.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined });")
 
-            # 1. 激活 NopeCHA（插件模式，仅当插件加载成功时）
+            # 1. 激活 NopeCHA 插件
             if ext_ok and NOPECHA_KEY:
                 try:
-                    log(f"[{email}] 激活 NopeCHA 插件...")
-                    page.goto(f"https://nopecha.com/setup#{NOPECHA_KEY}", wait_until="commit", timeout=30000)
-                    time.sleep(3)
+                    log(f"[{email}] 配置 NopeCHA API Key...")
+                    page.goto(f"https://nopecha.com/setup#{NOPECHA_KEY}", wait_until="commit", timeout=15000)
+                    time.sleep(2)
                 except Exception as e:
-                    log(f"[{email}] NopeCHA setup 失败（不影响主流程）: {e}", "WARN")
+                    log(f"[{email}] NopeCHA setup 提示（不影响主流程）: {e}", "WARN")
 
-            # 1.5 代理连通性预检测
-            log(f"[{email}] 预检测代理...")
+            # 2. 打开登录页（超时 90s）
+            log(f"[{email}] 打开登录页: {BASE_URL}/connexion ...")
             try:
-                req = urllib.request.Request(BASE_URL, headers={"User-Agent": "Mozilla/5.0"})
-                proxy = urllib.request.ProxyHandler({"https": PROXY_URL, "http": PROXY_URL})
-                opener = urllib.request.build_opener(proxy)
-                opener.open(req, timeout=15)
-                log(f"[{email}] ✅ 代理可达")
-            except Exception as e:
-                log(f"[{email}] ⚠️ 代理预检: {e}", "WARN")
-
-            # 2. 打开登录页（CF 经常要 40-60s，timeout 改 120s）
-            log(f"[{email}] [第 {attempt} 次] 打开登录页: {BASE_URL}/connexion ...")
-            try:
-                page.goto(f"{BASE_URL}/connexion", wait_until="commit", timeout=120000)
+                page.goto(f"{BASE_URL}/connexion", wait_until="commit", timeout=90000)
                 log(f"[{email}] ✅ 页面提交请求完成")
             except Exception as e:
-                log(f"[{email}] ❌ 页面加载超时(120s): {e}", "WARN")
-                try:
-                    page.screenshot(path=f"goto_timeout_{acc_index}.png")
-                except Exception:
-                    pass
-            time.sleep(5)
+                log(f"[{email}] ❌ 页面加载超时(90s): {e}", "WARN")
 
-            # 2.5 等待 Cloudflare challenge 完成（最多 30s，够用即可）
-            log(f"[{email}] [第 {attempt} 次] 等待 Cloudflare challenge 通过...")
-            cf_passed = False
-            for cf_wait in range(30):
+            # 2.5 快速检测 Cloudflare challenge / 表单就绪状态（无需死等 30 秒！）
+            log(f"[{email}] 检查页面表单与 Cloudflare 状态...")
+            form_ready = False
+            for w in range(25):
                 try:
-                    page_content = page.content()
-                    if "Just a moment" not in page_content and "cloudflare" not in page_content.lower():
-                        log(f"[{email}] ✅ Cloudflare challenge 已通过（等待 {cf_wait}s）")
-                        cf_passed = True
+                    if page.locator("input[type='email'], input[name='email'], input[name='username']").first.is_visible():
+                        log(f"[{email}] ✅ 登录表单已就绪（耗时 {w}s）")
+                        form_ready = True
                         break
-                    if "cdn-cgi" in page_content and "status" in page_content:
-                        status_match = re.search(r'"status":"(\w+)"', page_content)
-                        if status_match and status_match.group(1) == "ok":
-                            log(f"[{email}] ✅ Cloudflare challenge 已通过")
-                            cf_passed = True
-                            break
                 except Exception:
                     pass
                 time.sleep(1)
 
-            if not cf_passed:
-                log(f"[{email}] ⚠️ Cloudflare challenge 等待超时(30s)，继续尝试...", "WARN")
-                try:
-                    page.screenshot(path=f"cf_challenge_{acc_index}.png")
-                except Exception:
-                    pass
+            if not form_ready:
+                log(f"[{email}] ⚠️ 未检测到邮箱输入框，可能卡在 Cloudflare Challenge，尝试等待 5s...", "WARN")
+                time.sleep(5)
 
             # 3. 输入账号密码
-            log(f"[{email}] 填写账号密码...")
+            log(f"[{email}] 填写账号与密码...")
+            email_input = page.locator("input[type='email'], input[name='email'], input[name='username']").first
+            pass_input = page.locator("input[type='password'], input[name='password']").first
             try:
-                email_input = page.locator("input[type='email'], input[name='email'], input[name='username']").first
-                pass_input = page.locator("input[type='password'], input[name='password']").first
+                email_input.wait_for(state="visible", timeout=15000)
                 email_input.fill(email)
                 pass_input.fill(password)
                 time.sleep(1)
             except Exception as e:
-                log(f"[{email}] ❌ 找不到输入框: {e}", "WARN")
+                log(f"[{email}] ❌ 定位或填充输入框失败: {e}", "WARN")
+                page.screenshot(path=f"input_failed_{acc_index}.png")
                 continue
 
-            # 4. 等待打码（120s）
-            log(f"[{email}] [第 {attempt} 次] 等待 NopeCHA 自动识别 hCaptcha 验证码...")
+            # 4. 等待打码完成（精准判断，杜绝 false-positive 误判）
+            log(f"[{email}] 等待 hCaptcha 识别与校验...")
             captcha_solved = False
-            for i in range(120):
+            for i in range(1, 91):
                 try:
                     solved = page.evaluate("""() => {
+                        // 1. 检查响应 textarea（最严谨的已解出标准，长度通常大于 30）
                         const tas = document.querySelectorAll('textarea[name="h-captcha-response"], textarea[name="g-recaptcha-response"]');
                         for (const ta of tas) {
-                            if (ta.value && ta.value.trim().length > 20) return true;
+                            if (ta.value && ta.value.trim().length > 30) return true;
                         }
+                        // 2. 检查 hcaptcha 对象
+                        if (window.hcaptcha && typeof window.hcaptcha.getResponse === 'function') {
+                            const resp = window.hcaptcha.getResponse();
+                            if (resp && resp.length > 30) return true;
+                        }
+                        // 3. 检查 iframe 勾选属性（仅匹配明确的 aria-checked="true"，禁止匹配通配 .check）
                         const iframes = document.querySelectorAll('iframe[src*="hcaptcha"], iframe[title*="hcaptcha"]');
                         for (const f of iframes) {
                             try {
-                                if (f.contentDocument?.querySelector('[aria-checked="true"], .check')) return true;
+                                const doc = f.contentDocument || f.contentWindow?.document;
+                                if (doc && doc.querySelector('[aria-checked="true"]')) return true;
                             } catch(e) {}
                         }
                         return false;
                     }""")
                     if solved:
                         captcha_solved = True
-                        log(f"[{email}] 🎉 验证码破解成功（耗时 {i + 1} 秒）✅")
+                        log(f"[{email}] 🎉 hCaptcha 验证码破解成功（耗时 {i} 秒）✅")
                         break
                 except Exception:
                     pass
+
+                # 若插件打码在 40 秒内未成功，尝试通过 NopeCHA API 兜底一次
+                if i == 40 and not captcha_solved and NOPECHA_KEY:
+                    log(f"[{email}] 插件打码耗时较长，触发 NopeCHA API 兜底请求...")
+                    try:
+                        sitekey = page.evaluate("""() => {
+                            const el = document.querySelector('[data-sitekey]');
+                            return el ? el.getAttribute('data-sitekey') : '';
+                        }""")
+                        if sitekey:
+                            api_token = solve_hcaptcha_api(sitekey, page.url)
+                            if api_token:
+                                page.evaluate("""(tok) => {
+                                    const tas = document.querySelectorAll('textarea[name="h-captcha-response"], textarea[name="g-recaptcha-response"]');
+                                    tas.forEach(t => { t.value = tok; });
+                                }""", api_token)
+                                captcha_solved = True
+                                log(f"[{email}] 🎉 API 兜底填入 token 成功！")
+                                break
+                    except Exception as api_err:
+                        log(f"[{email}] API 兜底异常: {api_err}", "WARN")
+
                 time.sleep(1)
 
             if not captcha_solved:
-                log(f"[{email}] ⚠️ 验证码识别超时(120s)，准备重新尝试...", "WARN")
+                log(f"[{email}] ⚠️ 验证码识别超时(90s)，继续尝试提交...", "WARN")
 
-            time.sleep(2)
-
-            # 5. 重新确认账号密码
+            # 再次确认输入框值完整
             try:
                 if not email_input.input_value():
                     email_input.fill(email)
@@ -311,71 +319,67 @@ def process_single_account(p, email, password, acc_index, total_accs):
             except Exception:
                 pass
 
-            # 点击提交按钮
+            # 5. 精准点击提交按钮（避免遍历 14 个 selector 浪费 30+ 秒）
             submit_clicked = False
-            for selector in [
-                "button[type='submit']",
-                "input[type='submit']",
-                "button:has-text('Sign In')",
-                "button:has-text('Sign in')",
-                "button:has-text('Login')",
-                "button:has-text('Log In')",
-                "button:has-text('Se connecter')",
-                "button:has-text('Connexion')",
-                "button:has-text('Entrer')",
-                "button:has-text('Valider')",
-                "button:has-text('Submit')",
-                "button.btn-primary",
-                "button.btn",
-                "form button",
-            ]:
-                try:
-                    btn = page.locator(selector).first
-                    if btn.is_visible(timeout=2000):
-                        btn.click(force=True, timeout=5000)
-                        log(f"[{email}] 点击按钮: {selector}", "INFO")
-                        submit_clicked = True
-                        break
-                except Exception:
-                    continue
+            try:
+                # 优先匹配所属 form 内的提交按钮
+                form_btn = page.locator("form button[type='submit'], form input[type='submit'], form button.btn-primary").first
+                if form_btn.is_visible(timeout=1000):
+                    form_btn.click(timeout=3000)
+                    log(f"[{email}] ✅ 点击表单提交按钮")
+                    submit_clicked = True
+            except Exception:
+                pass
 
             if not submit_clicked:
-                log(f"[{email}] 未找到提交按钮，按回车", "WARN")
-                try:
-                    pass_input.press("Enter", timeout=10000)
-                except Exception:
-                    log(f"[{email}] 按回车超时（页面状态异常），跳过此尝试", "WARN")
+                for sel in ["button:has-text('Sign In')", "button:has-text('Connexion')", "button:has-text('Login')", "button.btn-primary", "button[type='submit']"]:
+                    try:
+                        btn = page.locator(sel).first
+                        if btn.is_visible(timeout=500):
+                            btn.click(timeout=2000)
+                            log(f"[{email}] ✅ 点击按钮: {sel}")
+                            submit_clicked = True
+                            break
+                    except Exception:
+                        continue
 
-            time.sleep(6)
+            if not submit_clicked:
+                log(f"[{email}] 触发键盘回车提交登录...")
+                page.keyboard.press("Enter")
+
+            # 等待登录导航或结果（最多 12s）
+            time.sleep(4)
+            try:
+                page.wait_for_url(lambda u: "connexion" not in u.lower() and "login" not in u.lower(), timeout=8000)
+            except Exception:
+                pass
 
             # 检查登录结果
             current_url = page.url.lower()
             if "connexion" in current_url or "login" in current_url:
-                log(f"[{email}] ❌ [第 {attempt} 次] 登录失败，留在登录页。将在 {RETRY_DELAY} 秒后重新尝试...", "WARN")
+                err_hint = ""
                 try:
-                    page.screenshot(path=f"login_failed_{acc_index}.png")
+                    err_hint = page.evaluate("() => document.querySelector('.alert, .error, .toast, .text-danger')?.innerText || ''")
                 except Exception:
                     pass
+                log(f"[{email}] ❌ [第 {attempt} 次] 登录未成功，仍停留在登录页。错误提示: '{err_hint.strip()}'。将在 {RETRY_DELAY} 秒后重试...", "WARN")
+                page.screenshot(path=f"login_failed_{acc_index}.png")
                 time.sleep(RETRY_DELAY)
                 continue
 
-            log(f"[{email}] 🎉 登录成功！正在进入实例详情页...")
-            time.sleep(3)
+            log(f"[{email}] 🎉 登录成功！当前 URL: {page.url}")
 
-            # 6. 先检查当前页面——防止已在实例详情页或意外在 Order 页面
+            # 6. 进入实例详情页
             current_url = page.url.lower()
-            log(f"[{email}] 当前页面: {current_url}")
-            # 如果已经在实例详情页（含有 instance/vps/serveur 等关键字），跳过导航
             if any(k in current_url for k in ["/instance", "/vps", "/serveur", "/vm", "/server"]):
-                log(f"[{email}] ✅ 已在实例详情页，跳过 Manage 导航")
+                log(f"[{email}] ✅ 已在实例详情页")
             elif "/order" in current_url or "commande" in current_url:
-                # 在 Order 页面：说明账号无实例（已达1项目上限）
-                log(f"[{email}] ⚠️ 检测到 Order 页面，账号可能已达项目上限，无法新建", "WARN")
-                action_result = "⛔ 账号在 Order 页面（已达项目上限或无实例），跳过"
+                log(f"[{email}] ⚠️ 检测到 Order 页面，账号可能无实例或已达上限", "WARN")
+                action_result = "⛔ 账号在 Order 页面（无实例或已达项目上限），跳过"
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 page.screenshot(path=f"instance_{acc_index}.png")
                 caption = (
-                    f"⚠️ <b>VPSFree.es 账号异常 [{acc_index}/{total_accs}]</b>\n"
+                    f"⚠️ <b>VPSFree.es 账号提示 [{acc_index}/{total_accs}]</b>\n"
                     f"━━━━━━━━━━━━━━━━\n"
                     f"📧 <b>账号:</b> <code>{email}</code>\n"
                     f"⚡ <b>状态:</b> {action_result}\n"
@@ -384,66 +388,27 @@ def process_single_account(p, email, password, acc_index, total_accs):
                 )
                 send_tg_photo(f"instance_{acc_index}.png", caption)
                 browser.close()
-                log(f"[{email}] 账号跳过完成（Order 页面）")
                 return True
             else:
-                # 需要导航到实例详情页
                 log(f"[{email}] 正在点击 Manage 进入实例详情...")
                 try:
-                    # 优先找明确的实例列表/卡片（排除 Order）
-                    for manage_selector in [
-                        # 实例列表中的 Manage
-                        "table a:has-text('Manage'):not([href*='order']):not([href*='new'])",
-                        "a[href*='/instance/']:has-text('Manage')",
-                        "a[href*='/vps/']:has-text('Manage')",
-                        "a[href*='/vm/']:has-text('Manage')",
-                        # 通用的 Manage（排除会跳到 Order 的）
-                        "a:has-text('Manage'):not([href*='order']):not([href*='new']):not([href*='create'])",
-                        "button:has-text('Manage'):not(:has-text('New')):not(:has-text('Order'))",
-                    ]:
-                        try:
-                            btn = page.locator(manage_selector).first
-                            if btn.is_visible(timeout=3000):
-                                btn.click(timeout=5000)
-                                log(f"[{email}] 点击: {manage_selector}")
-                                time.sleep(3)
-                                break
-                        except Exception:
-                            continue
+                    manage_btn = page.locator("a:has-text('Manage'):not([href*='order']):not([href*='new']):not([href*='create']), button:has-text('Manage'):not(:has-text('New'))").first
+                    if manage_btn.is_visible(timeout=3000):
+                        manage_btn.click(timeout=5000)
+                        log(f"[{email}] 已点击 Manage")
+                        time.sleep(3)
                 except Exception as e:
-                    log(f"[{email}] Manage 导航失败: {e}", "WARN")
+                    log(f"[{email}] Manage 导航尝试: {e}", "WARN")
 
-                # 检查是否到了 Manage VPS 子页面
-                current_url = page.url.lower()
-                if "manage" not in current_url and "/instance" not in current_url and "/vps" not in current_url:
-                    try:
-                        for sub_selector in [
-                            "a:has-text('Manage VPS'):not([href*='order'])",
-                            "a:has-text('Gérer le VPS')",
-                            "button:has-text('Manage VPS')",
-                        ]:
-                            try:
-                                btn = page.locator(sub_selector).first
-                                if btn.is_visible(timeout=3000):
-                                    btn.click(timeout=5000)
-                                    log(f"[{email}] 点击子级: {sub_selector}")
-                                    time.sleep(3)
-                                    break
-                            except Exception:
-                                continue
-                    except Exception as e:
-                        log(f"[{email}] Manage VPS 导航失败: {e}", "WARN")
-
-            # 7. 提取状态信息（先等页面稳定，再取文本）
-            time.sleep(2)  # 等导航动画完成
+            # 7. 提取页面状态文本（使用 evaluate 瞬时提取，杜绝 inner_text 超时）
+            time.sleep(2)
             try:
-                # 等待页面有实质内容
-                page.wait_for_selector("body", state="attached", timeout=15000)
-                body_text = page.locator("body").inner_text(timeout=15000)
-                log(f"[{email}] 页面文本已获取，长度: {len(body_text)} 字符")
+                body_text = page.evaluate("() => document.body ? document.body.innerText : ''")
+                log(f"[{email}] 页面文本提取成功，长度: {len(body_text)} 字符")
             except Exception as e:
-                log(f"[{email}] body inner_text 超时: {e}，使用空字符串继续", "WARN")
+                log(f"[{email}] 获取 body 文本异常: {e}", "WARN")
                 body_text = ""
+
             expires_str = "未获取到"
             m_exp = re.search(r"Expires:\s*([^\n\r]+)", body_text)
             if m_exp:
@@ -470,67 +435,43 @@ def process_single_account(p, email, password, acc_index, total_accs):
             if m_disk:
                 disk_str = m_disk.group(1)
 
-            # 8. 自动点击续期（更精准的 selector，排除 Order 页面元素）
+            # 8. 探测并点击续期（单次聚合查询，耗时从 18s 降低至 1s）
             action_result = "⏸ 暂未开放（仅到期前24小时内可点）"
             try:
-                # 先确认当前页是实例详情页
                 detail_url = page.url.lower()
                 if "/order" in detail_url or "commande" in detail_url:
                     log(f"[{email}] ⚠️ 当前在 Order 页面，跳过续期")
                 else:
-                    # 续期按钮精确 selector
-                    for renew_selector in [
-                        # 7天续期按钮
-                        "button:has-text('Renew for 7 days')",
-                        "a:has-text('Renew for 7 days')",
-                        # 通用 Renew（排除 New/Order）
-                        "button:has-text('Renew'):not(:has-text('New')):not(:has-text('Order'))",
-                        "a:has-text('Renew'):not([href*='order']):not([href*='new'])",
-                        # 法语
-                        "button:has-text('Renouveler')",
-                        "a:has-text('Renouveler')",
-                    ]:
-                        try:
-                            renew_btn = page.locator(renew_selector).first
-                            if renew_btn.is_visible(timeout=3000):
-                                is_disabled = renew_btn.get_attribute("disabled")
-                                if is_disabled is not None:
-                                    log(f"[{email}] 续期按钮存在但被禁用（disabled），说明未到续期窗口")
-                                    action_result = "⏸ 按钮存在但被禁用（未到续期窗口）"
-                                    break
-                                log(f"[{email}] 发现续期按钮: {renew_selector}")
-                                renew_btn.click(timeout=10000)
-                                time.sleep(3)
-                                # 找确认按钮
-                                for confirm_selector in [
-                                    "button:has-text('Confirm')",
-                                    "button:has-text('Confirmer')",
-                                    "button:has-text('Yes')",
-                                    "button:has-text('Valider')",
-                                ]:
-                                    try:
-                                        confirm_btn = page.locator(confirm_selector).first
-                                        if confirm_btn.is_visible(timeout=2000):
-                                            confirm_btn.click(timeout=5000)
-                                            log(f"[{email}] 点击确认按钮")
-                                            break
-                                    except Exception:
-                                        continue
-                                action_result = "🎉 <b>成功完成续期！</b>"
-                                log(f"[{email}] 续期完成 ✅")
-                                break
-                        except Exception:
-                            continue
+                    renew_btn = page.locator("button:has-text('Renew for 7 days'), a:has-text('Renew for 7 days'), button:has-text('Renew'):not(:has-text('New')):not(:has-text('Order')), button:has-text('Renouveler')").first
+                    if renew_btn.is_visible(timeout=1000):
+                        is_disabled = renew_btn.get_attribute("disabled")
+                        btn_cls = renew_btn.get_attribute("class") or ""
+                        if is_disabled is not None or "disabled" in btn_cls:
+                            log(f"[{email}] 续期按钮存在但处于禁用状态（未到 24h 窗口）")
+                            action_result = "⏸ 按钮存在但被禁用（未到 24h 续期窗口）"
+                        else:
+                            log(f"[{email}] 发现可点击续期按钮，正在执行续期...")
+                            renew_btn.click(timeout=5000)
+                            time.sleep(2)
+                            confirm_btn = page.locator("button:has-text('Confirm'), button:has-text('Confirmer'), button:has-text('Yes'), button:has-text('Valider')").first
+                            if confirm_btn.is_visible(timeout=2000):
+                                confirm_btn.click(timeout=3000)
+                                log(f"[{email}] 点击确认按钮成功")
+                            action_result = "🎉 <b>成功完成续期！</b>"
+                            log(f"[{email}] 续期操作完成 ✅")
                     else:
-                        log(f"[{email}] 未找到续期按钮（可能未到 24h 窗口期）")
+                        log(f"[{email}] 未找到续期按钮（未到 24h 窗口期）")
                         action_result = "⏸ 未找到续期按钮（正常：未到 24h 窗口期）"
             except Exception as e:
                 action_result = f"续期操作异常: {e}"
-                log(f"[{email}] 续期异常: {e}", "WARN")
+                log(f"[{email}] 续期操作异常: {e}", "WARN")
 
             time.sleep(2)
             shot_path = f"instance_{acc_index}.png"
-            page.screenshot(path=shot_path)
+            try:
+                page.screenshot(path=shot_path)
+            except Exception:
+                pass
 
             # 9. 发送该账号的独立报告
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -538,7 +479,7 @@ def process_single_account(p, email, password, acc_index, total_accs):
                 f"🖥 <b>VPSFree.es 实例运行报告 [{acc_index}/{total_accs}]</b>\n"
                 f"━━━━━━━━━━━━━━━━\n"
                 f"📧 <b>账号:</b> <code>{email}</code>\n"
-                f"🔢 <b>尝试次数:</b> 共尝试 {attempt} 次后成功\n"
+                f"🔢 <b>尝试次数:</b> 第 {attempt} 次成功\n"
                 f"📊 <b>资源:</b> CPU: {cpu_str} | 内存: {mem_str} | 硬盘: {disk_str}\n"
                 f"⏱ <b>运行:</b> {uptime_str}\n"
                 f"━━━━━━━━━━━━━━━━\n"
@@ -552,7 +493,7 @@ def process_single_account(p, email, password, acc_index, total_accs):
             return True
 
         except Exception as e:
-            log(f"[{email}] ❌ [第 {attempt} 次] 处理流程异常: {e}，将在 {RETRY_DELAY} 秒后重试...", "ERROR")
+            log(f"[{email}] ❌ [第 {attempt}/{max_attempts} 次] 流程异常: {e}，将在 {RETRY_DELAY} 秒后重试...", "ERROR")
             time.sleep(RETRY_DELAY)
         finally:
             if browser:
@@ -561,13 +502,13 @@ def process_single_account(p, email, password, acc_index, total_accs):
                 except Exception:
                     pass
 
-    log(f"[{email}] ❌ 5次尝试后仍失败，跳过此账号", "ERROR")
+    log(f"[{email}] ❌ 重试耗尽，跳过此账号", "ERROR")
     return False
 
 
 def main():
     log("=" * 40)
-    log("VPSFree.es 自动续期运行开始")
+    log("VPSFree.es 自动续期运行开始 (优化增强版)")
     log("=" * 40)
 
     accounts = get_accounts()
@@ -588,12 +529,11 @@ def main():
             except Exception as e:
                 log(f"[{acc['email']}] 主流程异常: {e}", "ERROR")
             if idx < total:
-                log("等待 5 秒后处理下一个账号...")
-                time.sleep(5)
+                log("等待 3 秒后处理下一个账号...")
+                time.sleep(3)
 
     log("🎉 所有账号处理完毕！")
-    # 汇总报告
-    summary = f"🖥 <b>VPSFree.es 续期汇总</b>\n━━━━━━━━━━━━━━━━\n处理账号数: {total}\n⏰ 完成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    summary = f"🖥 <b>VPSFree.es 续期巡检汇总</b>\n━━━━━━━━━━━━━━━━\n✅ 处理账号总数: {total}\n⏰ 完成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
     send_tg_text(summary)
     log("✅ 汇总已推送至 TG")
 

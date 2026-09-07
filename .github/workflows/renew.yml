@@ -13,7 +13,7 @@ permissions:
 jobs:
   renew:
     runs-on: ubuntu-latest
-    timeout-minutes: 40  # 5个账号 × 平均6分钟 = 30分钟，冗余
+    timeout-minutes: 30
 
     steps:
       - name: 检出仓库代码
@@ -39,52 +39,60 @@ jobs:
           unzip -q -o nopecha.zip -d scripts/extensions/nopecha/unpacked
           echo "插件准备就绪！"
 
-      - name: 启动后台 TUIC 代理 (sing-box)
+      - name: 启动代理服务 (优先使用 Secret PROXY_URL，否则启用内置 TUIC)
+        env:
+          CUSTOM_PROXY: ${{ secrets.PROXY_URL }}
         run: |
-          echo "下载 sing-box 客户端..."
-          curl -Lo sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.13.19/sing-box-1.13.19-linux-amd64.tar.gz
-          tar -xzf sing-box.tar.gz
-          mv sing-box-1.13.19-linux-amd64/sing-box ./sing-box
-          chmod +x ./sing-box
+          set -euo pipefail
+          if [ -n "$CUSTOM_PROXY" ]; then
+            echo "✅ 检测到自定义 Secret PROXY_URL，使用自定义代理"
+            echo "PROXY_URL=$CUSTOM_PROXY" >> $GITHUB_ENV
+          else
+            echo "未配置 PROXY_URL Secret，启动内置 sing-box TUIC 代理 (127.0.0.1:7890)..."
+            curl -sLo sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.13.19/sing-box-1.13.19-linux-amd64.tar.gz
+            tar -xzf sing-box.tar.gz
+            mv sing-box-1.13.19-linux-amd64/sing-box ./sing-box
+            chmod +x ./sing-box
 
-          echo "生成 TUIC 节点配置文件..."
-          cat << 'EOF' > config.json
-          {
-            "inbounds": [
-              {
-                "type": "mixed",
-                "tag": "mixed-in",
-                "listen": "127.0.0.1",
-                "listen_port": 7890
-              }
-            ],
-            "outbounds": [
-              {
-                "type": "tuic",
-                "tag": "tuic-out",
-                "server": "payload.ingress.hnhost.net",
-                "server_port": 10373,
-                "uuid": "adf4e830-d1b1-4120-9f26-6a6b1f04d6d2",
-                "password": "",
-                "congestion_control": "bbr",
-                "udp_relay_mode": "native",
-                "tls": {
-                  "enabled": true,
-                  "server_name": "www.bing.com",
-                  "insecure": true,
-                  "alpn": [
-                    "h3"
-                  ]
+            cat << 'EOF' > config.json
+            {
+              "inbounds": [
+                {
+                  "type": "mixed",
+                  "tag": "mixed-in",
+                  "listen": "127.0.0.1",
+                  "listen_port": 7890
                 }
-              }
-            ]
-          }
-          EOF
+              ],
+              "outbounds": [
+                {
+                  "type": "tuic",
+                  "tag": "tuic-out",
+                  "server": "payload.ingress.hnhost.net",
+                  "server_port": 10373,
+                  "uuid": "adf4e830-d1b1-4120-9f26-6a6b1f04d6d2",
+                  "password": "",
+                  "congestion_control": "bbr",
+                  "udp_relay_mode": "native",
+                  "tls": {
+                    "enabled": true,
+                    "server_name": "www.bing.com",
+                    "insecure": true,
+                    "alpn": [
+                      "h3"
+                    ]
+                  }
+                }
+              ]
+            }
+            EOF
 
-          echo "启动后台代理服务..."
-          ./sing-box run -c config.json &
-          sleep 4
-          curl -x http://127.0.0.1:7890 https://api.ipify.org || echo "代理网络就绪"
+            ./sing-box run -c config.json > sing-box.log 2>&1 &
+            sleep 3
+            PROXY_IP=$(curl -s --max-time 10 -x http://127.0.0.1:7890 https://api.ipify.org || echo "")
+            echo "✅ 代理出口 IP: ${PROXY_IP:-未知}"
+            echo "PROXY_URL=http://127.0.0.1:7890" >> $GITHUB_ENV
+          fi
 
       - name: 运行批量续期脚本 (Xvfb 虚拟屏幕环境)
         env:
@@ -94,14 +102,15 @@ jobs:
           NOPECHA_KEY: ${{ secrets.NOPECHA_KEY }}   # NopeCHA 打码 API Key
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }} # Telegram 推送 Token
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}     # Telegram Chat ID
-          PROXY_URL: "http://127.0.0.1:7890"        # 本地 sing-box 代理端口
+          PROXY_URL: ${{ env.PROXY_URL }}           # 代理地址
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1440x900x24" python renew_vps.py
 
-      - name: 清理历史运行记录（仅保留最新1条）
+      - name: 清理历史运行记录（保留最新5条便于追溯）
+        if: always()
         uses: Mattraks/delete-workflow-runs@v2
         with:
           token: ${{ github.token }}
           repository: ${{ github.repository }}
           retain_days: 0
-          keep_minimum_runs: 1
+          keep_minimum_runs: 5
