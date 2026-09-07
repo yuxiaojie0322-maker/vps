@@ -222,34 +222,54 @@ def process_single_account(p, email, password, acc_index, total_accs):
             except Exception as e:
                 log(f"[{email}] ❌ 页面加载超时(90s): {e}", "WARN")
 
-            # 2.5 快速检测 Cloudflare challenge / 表单就绪状态（无需死等 30 秒！）
-            log(f"[{email}] 检查页面表单与 Cloudflare 状态...")
+            # 2.5 快速检测 Cloudflare challenge / 表单就绪状态
+            log(f"[{email}] 等待 Cloudflare 验证通过及登录表单就绪...")
             form_ready = False
-            for w in range(25):
+            email_locator = page.locator("input[type='email'], input[name='email'], input[name='username']").first
+            pass_locator = page.locator("input[type='password'], input[name='password']").first
+
+            for w in range(1, 46):
                 try:
-                    if page.locator("input[type='email'], input[name='email'], input[name='username']").first.is_visible():
-                        log(f"[{email}] ✅ 登录表单已就绪（耗时 {w}s）")
+                    cur_title = page.title()
+                    if email_locator.is_visible():
+                        log(f"[{email}] ✅ 登录表单已就绪（耗时 {w}s, Title='{cur_title}'）")
                         form_ready = True
                         break
+                    
+                    if "just a moment" in cur_title.lower() or "challenge" in cur_title.lower():
+                        if w % 10 == 0:
+                            log(f"[{email}] Cloudflare 挑战通过中... (已等待 {w}s)")
+                        # 尝试点击 Turnstile 勾选框
+                        try:
+                            cf_frame = page.frame_locator("iframe[src*='challenges.cloudflare.com']").first
+                            chk = cf_frame.locator("input[type='checkbox'], .ctp-checkbox-label").first
+                            if chk.is_visible():
+                                chk.click(timeout=1000)
+                                log(f"[{email}] 已点击 Turnstile 验证框")
+                        except Exception:
+                            pass
                 except Exception:
                     pass
                 time.sleep(1)
 
             if not form_ready:
-                log(f"[{email}] ⚠️ 未检测到邮箱输入框，可能卡在 Cloudflare Challenge，尝试等待 5s...", "WARN")
-                time.sleep(5)
+                cur_title = page.title()
+                log(f"[{email}] ⚠️ 等待45s未检测到表单: URL={page.url}, Title='{cur_title}'", "WARN")
 
             # 3. 输入账号密码
             log(f"[{email}] 填写账号与密码...")
-            email_input = page.locator("input[type='email'], input[name='email'], input[name='username']").first
-            pass_input = page.locator("input[type='password'], input[name='password']").first
             try:
-                email_input.wait_for(state="visible", timeout=15000)
-                email_input.fill(email)
-                pass_input.fill(password)
+                email_locator.wait_for(state="visible", timeout=15000)
+                email_locator.fill(email)
+                pass_locator.fill(password)
                 time.sleep(1)
             except Exception as e:
-                log(f"[{email}] ❌ 定位或填充输入框失败: {e}", "WARN")
+                snippet = ""
+                try:
+                    snippet = page.evaluate("() => document.body ? document.body.innerText.slice(0, 200) : ''").replace("\n", " ")
+                except Exception:
+                    pass
+                log(f"[{email}] ❌ 输入框定位失败: {e} | URL={page.url}, Title='{page.title()}', 页面内容='{snippet}'", "WARN")
                 page.screenshot(path=f"input_failed_{acc_index}.png")
                 continue
 
@@ -314,10 +334,10 @@ def process_single_account(p, email, password, acc_index, total_accs):
 
             # 再次确认输入框值完整
             try:
-                if not email_input.input_value():
-                    email_input.fill(email)
-                if not pass_input.input_value():
-                    pass_input.fill(password)
+                if not email_locator.input_value():
+                    email_locator.fill(email)
+                if not pass_locator.input_value():
+                    pass_locator.fill(password)
             except Exception:
                 pass
 

@@ -2,7 +2,8 @@
 """
 自动代理环境配置脚本:
 - 若环境变量 CUSTOM_PROXY 为标准 HTTP / SOCKS5 代理，则直接供 Chromium 使用。
-- 若为 tuic:// 协议或未配置，则自动解析参数生成 sing-box 配置并启动本地混合代理 (127.0.0.1:7890)。
+- 若为 hysteria2 / hy2 / tuic 协议，则自动解析参数生成 sing-box 配置并启动本地混合代理 (127.0.0.1:7890)。
+- 若未配置或解析失败，使用内置备用节点。
 """
 
 import os
@@ -25,13 +26,13 @@ def main():
                 f.write(f"PROXY_URL={custom_proxy}\n")
         return
 
-    # 2. 否则需要 sing-box 转换 (tuic:// 或默认内置 TUIC)
-    print("🔄 检测到 TUIC 协议或未配置外部代理，准备启动 sing-box 本地代理 (127.0.0.1:7890)...")
+    # 2. 否则需要 sing-box 转换
+    print(f"🔄 检测到 {schema or '空'} 协议，准备配置 sing-box 本地代理 (127.0.0.1:7890)...")
 
     # 默认兜底 TUIC 节点参数
     outbound_cfg = {
         "type": "tuic",
-        "tag": "tuic-out",
+        "tag": "proxy-out",
         "server": "payload.ingress.hnhost.net",
         "server_port": 10373,
         "uuid": "adf4e830-d1b1-4120-9f26-6a6b1f04d6d2",
@@ -46,7 +47,40 @@ def main():
         }
     }
 
-    if schema == "tuic":
+    if schema in ("hysteria2", "hy2"):
+        try:
+            u = urllib.parse.urlparse(custom_proxy)
+            qs = urllib.parse.parse_qs(u.query)
+            password = u.password if u.password else (u.username or "")
+            sni = qs.get("sni", [None])[0] or u.hostname
+            insecure = qs.get("insecure", ["1"])[0].lower() in ("1", "true")
+            port = int(u.port or 443)
+
+            hy2_out = {
+                "type": "hysteria2",
+                "tag": "proxy-out",
+                "server": u.hostname,
+                "server_port": port,
+                "password": password,
+                "tls": {
+                    "enabled": True,
+                    "server_name": sni,
+                    "insecure": True
+                }
+            }
+            obfs = qs.get("obfs", [None])[0]
+            if obfs:
+                obfs_password = qs.get("obfs-password", [""])[0]
+                hy2_out["obfs"] = {
+                    "type": obfs,
+                    "password": obfs_password
+                }
+            outbound_cfg = hy2_out
+            print(f"✅ 成功从 CUSTOM_PROXY 解析 Hysteria2 节点: {u.hostname}:{port}, SNI={sni}")
+        except Exception as e:
+            print(f"⚠️ 解析 Hysteria2 节点异常，使用备用配置: {e}")
+
+    elif schema == "tuic":
         try:
             u = urllib.parse.urlparse(custom_proxy)
             qs = urllib.parse.parse_qs(u.query)
@@ -58,7 +92,7 @@ def main():
                 outbound_cfg["uuid"] = u.username
             if u.password:
                 outbound_cfg["password"] = u.password
-            
+
             sni = qs.get("sni", [None])[0]
             if sni:
                 outbound_cfg["tls"]["server_name"] = sni
@@ -70,7 +104,7 @@ def main():
                 outbound_cfg["tls"]["alpn"] = alpn[0].split(",")
             print(f"✅ 成功从 CUSTOM_PROXY 解析 TUIC 节点: {outbound_cfg['server']}:{outbound_cfg['server_port']}")
         except Exception as e:
-            print(f"⚠️ 解析 CUSTOM_PROXY 失败，使用内置默认节点: {e}")
+            print(f"⚠️ 解析 TUIC 失败，使用备用配置: {e}")
 
     singbox_cfg = {
         "inbounds": [
@@ -91,7 +125,6 @@ def main():
     if github_env:
         with open(github_env, "a", encoding="utf-8") as f:
             f.write("PROXY_URL=http://127.0.0.1:7890\n")
-            f.write("NEED_SINGBOX=1\n")
 
 if __name__ == "__main__":
     main()

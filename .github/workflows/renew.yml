@@ -71,6 +71,14 @@ jobs:
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1440x900x24" python renew_vps.py
 
+      - name: 保存调试截图
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vpsfree-screenshots
+          path: "*.png"
+          if-no-files-found: ignore
+
       - name: 清理历史运行记录（保留最新5条便于追溯）
         if: always()
         uses: Mattraks/delete-workflow-runs@v2
