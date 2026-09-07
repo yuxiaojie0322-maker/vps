@@ -173,8 +173,8 @@ def process_single_account(p, email, password, acc_index, total_accs):
         else:
             log(f"[{email}] 代理协议不受 Chromium 支持，请转为 socks5/http: {clean_proxy}", "WARN")
 
-    # 最多重试5次
-    for attempt in range(1, 6):
+    # 最多重试3次
+    for attempt in range(1, 4):
         log(f"[{email}] === 第 {attempt} 次尝试 ===")
         log(f"[{email}] 🔄 正在启动独立会话...")
         browser = None
@@ -219,41 +219,76 @@ def process_single_account(p, email, password, acc_index, total_accs):
             except Exception as e:
                 log(f"[{email}] ⚠️ 代理预检: {e}", "WARN")
 
-            # 2. 打开登录页（CF 经常要 40-60s，timeout 改 120s）
+            # 2. 打开登录页（设置合理超时 60s）
             log(f"[{email}] [第 {attempt} 次] 打开登录页: {BASE_URL}/connexion ...")
             try:
-                page.goto(f"{BASE_URL}/connexion", wait_until="commit", timeout=120000)
+                page.goto(f"{BASE_URL}/connexion", wait_until="commit", timeout=60000)
                 log(f"[{email}] ✅ 页面提交请求完成")
             except Exception as e:
-                log(f"[{email}] ❌ 页面加载超时(120s): {e}", "WARN")
+                log(f"[{email}] ❌ 页面加载超时(60s): {e}", "WARN")
                 try:
                     page.screenshot(path=f"goto_timeout_{acc_index}.png")
                 except Exception:
                     pass
-            time.sleep(5)
+            time.sleep(4)
 
-            # 2.5 等待 Cloudflare challenge 完成（最多 30s，够用即可）
-            log(f"[{email}] [第 {attempt} 次] 等待 Cloudflare challenge 通过...")
+            # 2.5 等待并自动穿透 Cloudflare challenge / Turnstile（最多 45s）
+            log(f"[{email}] [第 {attempt} 次] 检测并等待 Cloudflare challenge / Turnstile 通过...")
             cf_passed = False
-            for cf_wait in range(30):
+            for cf_wait in range(45):
                 try:
+                    # 检查是否已经显示登录输入框（最直接标志）
+                    email_loc = page.locator("input[type='email'], input[name='email'], input[name='username']")
+                    if email_loc.count() > 0 and email_loc.first.is_visible():
+                        log(f"[{email}] ✅ 已直接检测到登录输入框，Cloudflare 通过（耗时 {cf_wait}s）")
+                        cf_passed = True
+                        break
+
                     page_content = page.content()
                     if "Just a moment" not in page_content and "cloudflare" not in page_content.lower():
                         log(f"[{email}] ✅ Cloudflare challenge 已通过（等待 {cf_wait}s）")
                         cf_passed = True
                         break
+
                     if "cdn-cgi" in page_content and "status" in page_content:
                         status_match = re.search(r'"status":"(\w+)"', page_content)
                         if status_match and status_match.group(1) == "ok":
                             log(f"[{email}] ✅ Cloudflare challenge 已通过")
                             cf_passed = True
                             break
+
+                    # 尝试寻找并点击 Cloudflare Turnstile 复选框
+                    # 1) 在所有 frame 中寻找验证复选框
+                    for frame in page.frames:
+                        try:
+                            chk = frame.locator("input[type='checkbox'], span.mark, .ctp-checkbox-label, #challenge-stage")
+                            if chk.count() > 0 and chk.first.is_visible():
+                                chk.first.click(timeout=2000)
+                                log(f"[{email}] 👆 点击了 Turnstile 复选框")
+                                time.sleep(2)
+                                break
+                        except Exception:
+                            pass
+
+                    # 2) 针对 Turnstile iframe 区域模拟鼠标点击
+                    for sel in ["iframe[src*='challenges.cloudflare.com']", "iframe[src*='turnstile']", "iframe[title*='Cloudflare']"]:
+                        try:
+                            cf_frame = page.locator(sel)
+                            if cf_frame.count() > 0 and cf_frame.first.is_visible():
+                                box = cf_frame.first.bounding_box()
+                                if box:
+                                    page.mouse.click(box["x"] + 28, box["y"] + box["height"] / 2)
+                                    log(f"[{email}] 👆 模拟鼠标点击 Turnstile 区域")
+                                    time.sleep(2)
+                                    break
+                        except Exception:
+                            pass
                 except Exception:
                     pass
                 time.sleep(1)
 
             if not cf_passed:
-                log(f"[{email}] ⚠️ Cloudflare challenge 等待超时(30s)，继续尝试...", "WARN")
+                log(f"[{email}] ⚠️ Cloudflare challenge 等待超时(45s)，继续尝试...", "WARN")
                 try:
                     page.screenshot(path=f"cf_challenge_{acc_index}.png")
                 except Exception:
@@ -264,11 +299,17 @@ def process_single_account(p, email, password, acc_index, total_accs):
             try:
                 email_input = page.locator("input[type='email'], input[name='email'], input[name='username']").first
                 pass_input = page.locator("input[type='password'], input[name='password']").first
+                # 等待可见（最多 8s，若未出现则直接重试，避免盲等 30s）
+                email_input.wait_for(state="visible", timeout=8000)
                 email_input.fill(email)
                 pass_input.fill(password)
                 time.sleep(1)
             except Exception as e:
                 log(f"[{email}] ❌ 找不到输入框: {e}", "WARN")
+                try:
+                    page.screenshot(path=f"input_not_found_{acc_index}.png")
+                except Exception:
+                    pass
                 continue
 
             # 4. 等待打码（120s）
@@ -559,7 +600,7 @@ def process_single_account(p, email, password, acc_index, total_accs):
                 except Exception:
                     pass
 
-    log(f"[{email}] ❌ 5次尝试后仍失败，跳过此账号", "ERROR")
+    log(f"[{email}] ❌ 3次尝试后仍失败，跳过此账号", "ERROR")
     return False
 
 
