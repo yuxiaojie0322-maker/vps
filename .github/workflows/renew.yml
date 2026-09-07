@@ -39,28 +39,22 @@ jobs:
           unzip -q -o nopecha.zip -d scripts/extensions/nopecha/unpacked
           echo "插件准备就绪！"
 
-      - name: 启动代理服务 (优先使用 Secret PROXY_URL，否则启用内置 TUIC)
+      - name: 配置并启动代理服务 (支持 HTTP/SOCKS5 及 TUIC sing-box 转换)
         env:
           CUSTOM_PROXY: ${{ secrets.PROXY_URL }}
         run: |
           set -euo pipefail
-          if [ -n "$CUSTOM_PROXY" ]; then
-            echo "✅ 检测到自定义 Secret PROXY_URL，使用自定义代理"
-            echo "PROXY_URL=$CUSTOM_PROXY" >> $GITHUB_ENV
-          else
-            echo "未配置 PROXY_URL Secret，启动内置 sing-box TUIC 代理 (127.0.0.1:7890)..."
+          python setup_proxy.py
+          if [ "${NEED_SINGBOX:-0}" = "1" ]; then
+            echo "📥 下载并启动 sing-box 服务..."
             curl -sLo sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.13.19/sing-box-1.13.19-linux-amd64.tar.gz
             tar -xzf sing-box.tar.gz
             mv sing-box-1.13.19-linux-amd64/sing-box ./sing-box
             chmod +x ./sing-box
-
-            echo '{"inbounds":[{"type":"mixed","tag":"mixed-in","listen":"127.0.0.1","listen_port":7890}],"outbounds":[{"type":"tuic","tag":"tuic-out","server":"payload.ingress.hnhost.net","server_port":10373,"uuid":"adf4e830-d1b1-4120-9f26-6a6b1f04d6d2","password":"","congestion_control":"bbr","udp_relay_mode":"native","tls":{"enabled":true,"server_name":"www.bing.com","insecure":true,"alpn":["h3"]}}]}' > config.json
-
             ./sing-box run -c config.json > sing-box.log 2>&1 &
             sleep 3
             PROXY_IP=$(curl -s --max-time 10 -x http://127.0.0.1:7890 https://api.ipify.org || echo "")
-            echo "✅ 代理出口 IP: ${PROXY_IP:-未知}"
-            echo "PROXY_URL=http://127.0.0.1:7890" >> $GITHUB_ENV
+            echo "✅ 代理出口 IP: ${PROXY_IP:-未知 (隧道已建立)}"
           fi
 
       - name: 运行批量续期脚本 (Xvfb 虚拟屏幕环境)

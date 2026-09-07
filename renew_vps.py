@@ -61,7 +61,8 @@ def solve_hcaptcha_api(sitekey, pageurl):
         }).encode()
         handlers = []
         if PROXY_URL:
-            handlers.append(urllib.request.ProxyHandler({"https": PROXY_URL, "http": PROXY_URL}))
+            proxy_clean = PROXY_URL if PROXY_URL.startswith(("http://", "https://")) else "http://127.0.0.1:7890"
+            handlers.append(urllib.request.ProxyHandler({"https": proxy_clean, "http": proxy_clean}))
         opener = urllib.request.build_opener(*handlers)
         req = urllib.request.Request(
             "https://api.nopecha.com",
@@ -175,7 +176,8 @@ def process_single_account(p, email, password, acc_index, total_accs):
         if clean_proxy.startswith(("http://", "https://", "socks5://", "socks4://")):
             proxy_config = {"server": clean_proxy}
         else:
-            log(f"[{email}] 代理协议不受 Chromium 支持，请转为 socks5/http: {clean_proxy}", "WARN")
+            log(f"[{email}] 代理协议不受 Chromium 原生支持 ({clean_proxy[:15]}...)，回退到本地 sing-box 代理 http://127.0.0.1:7890", "INFO")
+            proxy_config = {"server": "http://127.0.0.1:7890"}
 
     # 单账号最多尝试 3 次（原 5 次过长，容易耗尽工作流 40 分钟上限）
     max_attempts = 3
