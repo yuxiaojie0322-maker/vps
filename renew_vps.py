@@ -601,6 +601,24 @@ def process_single_account(p, email, password, acc_index, total_accs):
                     pass
 
     log(f"[{email}] ❌ 3次尝试后仍失败，跳过此账号", "ERROR")
+    # 如果有现场异常截图，推送到 Telegram 告知用户真实状况
+    fail_shot = None
+    for s_name in [f"cf_challenge_{acc_index}.png", f"input_not_found_{acc_index}.png", f"goto_timeout_{acc_index}.png"]:
+        if os.path.exists(s_name):
+            fail_shot = s_name
+            break
+    if fail_shot:
+        fail_caption = (
+            f"⚠️ <b>VPSFree.es 账号异常告警 [{acc_index}/{total_accs}]</b>\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"📧 <b>账号:</b> <code>{email}</code>\n"
+            f"❌ <b>状态:</b> 登录页面未加载或卡在盾页\n"
+            f"💡 <b>现场实况:</b> 目标源站宕机(Error 522/523)或网络异常\n"
+            f"⏰ <b>时间:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        )
+        send_tg_photo(fail_shot, fail_caption)
+        log(f"[{email}] ⚠️ 已向 TG 推送现场异常截图: {fail_shot}")
+
     return False
 
 
@@ -620,11 +638,18 @@ def main():
         log(f"  {i}. {acc['email']}")
 
     from playwright.sync_api import sync_playwright
+    success_count = 0
+    fail_count = 0
     with sync_playwright() as p:
         for idx, acc in enumerate(accounts, start=1):
             try:
-                process_single_account(p, acc["email"], acc["password"], idx, total)
+                ok = process_single_account(p, acc["email"], acc["password"], idx, total)
+                if ok:
+                    success_count += 1
+                else:
+                    fail_count += 1
             except Exception as e:
+                fail_count += 1
                 log(f"[{acc['email']}] 主流程异常: {e}", "ERROR")
             if idx < total:
                 log("等待 5 秒后处理下一个账号...")
@@ -632,7 +657,14 @@ def main():
 
     log("🎉 所有账号处理完毕！")
     # 汇总报告
-    summary = f"🖥 <b>VPSFree.es 续期汇总</b>\n━━━━━━━━━━━━━━━━\n处理账号数: {total}\n⏰ 完成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    summary = (
+        f"🖥 <b>VPSFree.es 续期汇总报告</b>\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"👥 总账号数: {total}\n"
+        f"✅ 成功完成: {success_count}\n"
+        f"❌ 处理失败: {fail_count}\n"
+        f"⏰ 完成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    )
     send_tg_text(summary)
     log("✅ 汇总已推送至 TG")
 
