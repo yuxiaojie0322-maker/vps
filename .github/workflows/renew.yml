@@ -54,21 +54,7 @@ jobs:
             mv sing-box-1.13.19-linux-amd64/sing-box ./sing-box
             chmod +x ./sing-box
 
-            python3 -c '
-import json
-cfg = {
-  "inbounds": [{"type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 7890}],
-  "outbounds": [{
-    "type": "tuic", "tag": "tuic-out",
-    "server": "payload.ingress.hnhost.net", "server_port": 10373,
-    "uuid": "adf4e830-d1b1-4120-9f26-6a6b1f04d6d2", "password": "",
-    "congestion_control": "bbr", "udp_relay_mode": "native",
-    "tls": {"enabled": True, "server_name": "www.bing.com", "insecure": True, "alpn": ["h3"]}
-  }]
-}
-with open("config.json", "w") as f:
-    json.dump(cfg, f, indent=2)
-'
+            echo '{"inbounds":[{"type":"mixed","tag":"mixed-in","listen":"127.0.0.1","listen_port":7890}],"outbounds":[{"type":"tuic","tag":"tuic-out","server":"payload.ingress.hnhost.net","server_port":10373,"uuid":"adf4e830-d1b1-4120-9f26-6a6b1f04d6d2","password":"","congestion_control":"bbr","udp_relay_mode":"native","tls":{"enabled":true,"server_name":"www.bing.com","insecure":true,"alpn":["h3"]}}]}' > config.json
 
             ./sing-box run -c config.json > sing-box.log 2>&1 &
             sleep 3
