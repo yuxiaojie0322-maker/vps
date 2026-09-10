@@ -1,6 +1,6 @@
 # 🚀 VPSFree.es 自动续期脚本 (GitHub Actions 增强版)
 
-基于 **GitHub Actions + Playwright + NopeCHA + Sing-box (Hysteria2)** 的全自动 [VPSFree.es](https://free.vpsfree.es) 免费 VPS 续期与巡检工具。
+基于 **GitHub Actions + Playwright + NopeCHA + Sing-box (VMess)** 的全自动 [VPSFree.es](https://free.vpsfree.es) 免费 VPS 续期与巡检工具。
 
 无需自己准备服务器或电脑开机，每日定时云端巡检、自动打码、精准捕捉 24 小时续期窗口，并将实例运行仪表盘与到期倒计时推送至 Telegram！
 
@@ -8,7 +8,7 @@
 
 ## ✨ 核心特性
 
-- 🌐 **内置 Hysteria2 代理网络**：自动启动 `sing-box` 客户端，完美绕过微软 GitHub 云端机房 IP 拦截风控。
+- 🌐 **内置 VMess 代理网络**：自动启动 `sing-box` 客户端，完美绕过微软 GitHub 云端机房 IP 拦截风控。
 - 🤖 **NopeCHA 验证码自动破解**：无缝通过 `free.vpsfree.es` 的 **hCaptcha** 人机验证。
 - ⚡ **精准捕捉 24 小时续期窗口**：根据官方规则（*仅在到期前最后 24 小时开放续期按钮*），设置每 12 小时（早晚各一次）自动巡检，确保绝不漏续、绝不删机。
 - 👥 **支持单账号 / 多账号批量轮询**：一个 Secret 即可配置多个账号，每个账号独立隔离会话运行。

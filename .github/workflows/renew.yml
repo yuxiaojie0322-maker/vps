@@ -39,7 +39,7 @@ jobs:
           unzip -q -o nopecha.zip -d scripts/extensions/nopecha/unpacked
           echo "插件准备就绪！"
 
-      - name: 后台启动 TUIC 代理服务 (sing-box)
+      - name: 后台启动 VMess 代理服务 (sing-box)
         run: |
           echo "下载 sing-box 客户端..."
           curl -Lo sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.13.19/sing-box-1.13.19-linux-amd64.tar.gz
@@ -47,9 +47,12 @@ jobs:
           mv sing-box-1.13.19-linux-amd64/sing-box ./sing-box
           chmod +x ./sing-box
 
-          echo "生成 TUIC 节点配置文件..."
+          echo "生成 VMess 节点配置文件..."
           cat << 'EOF' > config.json
           {
+            "log": {
+              "level": "warn"
+            },
             "inbounds": [
               {
                 "type": "mixed",
@@ -60,21 +63,27 @@ jobs:
             ],
             "outbounds": [
               {
-                "type": "tuic",
-                "tag": "tuic-out",
-                "server": "payload.ingress.hnhost.net",
-                "server_port": 10373,
-                "uuid": "adf4e830-d1b1-4120-9f26-6a6b1f04d6d2",
-                "password": "",
-                "congestion_control": "bbr",
-                "udp_relay_mode": "native",
+                "type": "vmess",
+                "tag": "vmess-out",
+                "server": "saas.sin.fan",
+                "server_port": 443,
+                "uuid": "2f9657fa-3531-48d7-869e-c67cbe58e09",
+                "security": "auto",
+                "alter_id": 0,
                 "tls": {
                   "enabled": true,
-                  "server_name": "www.bing.com",
-                  "insecure": true,
-                  "alpn": [
-                    "h3"
-                  ]
+                  "server_name": "freemchosting.blibli.kdns.fr",
+                  "utls": {
+                    "enabled": true,
+                    "fingerprint": "firefox"
+                  }
+                },
+                "transport": {
+                  "type": "ws",
+                  "path": "/vmess-argo",
+                  "headers": {
+                    "Host": "freemchosting.blibli.kdns.fr"
+                  }
                 }
               }
             ]
