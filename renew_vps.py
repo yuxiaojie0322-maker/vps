@@ -25,7 +25,7 @@ except Exception:
 
 # ========== 配置 ==========
 NOPECHA_KEY = os.environ.get("NOPECHA_KEY", "").strip()
-# Playwright 仅支持 http/socks5。TUIC 节点需经本地 Sing-box/Clash 转发为本地端口
+# Playwright 仅支持 http/socks5。Hysteria 2 / TUIC 节点需经本地 Sing-box/Clash 转发为本地端口
 PROXY_URL = os.environ.get("PROXY_URL", "socks5://127.0.0.1:10808").strip()
 BASE_URL = "https://free.vpsfree.es"
 EXT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),

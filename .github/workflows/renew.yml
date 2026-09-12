@@ -39,7 +39,7 @@ jobs:
           unzip -q -o nopecha.zip -d scripts/extensions/nopecha/unpacked
           echo "插件准备就绪！"
 
-      - name: 后台启动 TUIC 代理服务 (sing-box)
+      - name: 后台启动 Hysteria 2 代理服务 (sing-box)
         run: |
           echo "下载 sing-box 客户端..."
           curl -Lo sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.13.19/sing-box-1.13.19-linux-amd64.tar.gz
@@ -47,7 +47,7 @@ jobs:
           mv sing-box-1.13.19-linux-amd64/sing-box ./sing-box
           chmod +x ./sing-box
 
-          echo "生成 TUIC 节点配置文件..."
+          echo "生成 Hysteria 2 节点配置文件..."
           cat << 'EOF' > config.json
           {
             "log": {
@@ -63,14 +63,11 @@ jobs:
             ],
             "outbounds": [
               {
-                "type": "tuic",
-                "tag": "tuic-out",
-                "server": "35.212.225.219",
-                "server_port": 49832,
-                "uuid": "a17aa33e-3980-4560-83a5-dcee1eafde56",
-                "password": "a17aa33e-3980-4560-83a5-dcee1eafde56",
-                "congestion_control": "bbr",
-                "udp_relay_mode": "native",
+                "type": "hysteria2",
+                "tag": "hy2-out",
+                "server": "83.168.94.238",
+                "server_port": 30005,
+                "password": "031e1b07-ac55-476d-a415-4b3c5fc411f5",
                 "tls": {
                   "enabled": true,
                   "server_name": "www.bing.com",
